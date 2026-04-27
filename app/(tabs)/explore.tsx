@@ -1,35 +1,20 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native'
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+  ActivityIndicator,
+} from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Search } from 'lucide-react-native'
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import * as Location from 'expo-location'
+import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 
 const FILTERS = ['Všechny', 'Dnes', 'Blízko']
-
-const EVENTS = [
-  {
-    id: 1,
-    club: 'Letňáci Run Club',
-    name: 'Úterní Letná Loop',
-    meta: 'Dnes · 18:30 · Hanavský pavilon',
-    attendees: ['M', 'K', 'J'],
-    extra: 9,
-  },
-  {
-    id: 2,
-    club: 'Park Runners',
-    name: 'Evening Social Run',
-    meta: 'Dnes · 19:00 · Stromovka vstup',
-    attendees: ['T', 'L'],
-    extra: 5,
-  },
-]
-
-const CLUBS = [
-  { id: 1, emoji: '🏃', name: 'Letňáci', members: 47 },
-  { id: 2, emoji: '🌅', name: 'Žižkov Gang', members: 23 },
-  { id: 3, emoji: '🌿', name: 'Park Runners', members: 31 },
-]
 
 const AVATAR_COLORS = [
   { bg: COLORS.accentSoft, text: COLORS.accent },
@@ -37,18 +22,153 @@ const AVATAR_COLORS = [
   { bg: '#F0FFF4', text: '#22C55E' },
 ]
 
-export default function ExploreScreen() {
+type DbEvent = {
+  id: string
+  name: string
+  lat: number | null
+  lng: number | null
+  address: string | null
+  starts_at: string
+  clubs: { name: string } | null
+  event_participants: { id: string }[]
+}
+
+type DbClub = {
+  id: string
+  name: string
+  club_members: { id: string }[]
+}
+
+function getDayLabel(startsAt: string) {
+  const date = new Date(startsAt)
+  const today = new Date()
+  const tomorrow = new Date(today)
+  tomorrow.setDate(today.getDate() + 1)
+  if (date.toDateString() === today.toDateString()) return 'Dnes'
+  if (date.toDateString() === tomorrow.toDateString()) return 'Zítra'
+  return date.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
+}
+
+function getTimeLabel(startsAt: string) {
+  return new Date(startsAt).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+}
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+type UserLocation = { lat: number; lng: number }
+
+export default function NajitScreen() {
   const [activeFilter, setActiveFilter] = useState('Všechny')
+  const [searchText, setSearchText] = useState('')
+  const [events, setEvents] = useState<DbEvent[]>([])
+  const [clubs, setClubs] = useState<DbClub[]>([])
+  const [loading, setLoading] = useState(true)
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
+
+  useEffect(() => {
+    fetchData()
+  }, [])
+
+  useEffect(() => {
+    if (activeFilter === 'Blízko' && !userLocation) {
+      ;(async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync()
+        if (status === 'granted') {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
+          setUserLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude })
+        }
+      })()
+    }
+  }, [activeFilter])
+
+  async function fetchData() {
+    setLoading(true)
+    const [eventsRes, clubsRes] = await Promise.all([
+      supabase
+        .from('events')
+        .select('id, name, lat, lng, address, starts_at, clubs(name), event_participants(id)')
+        .gte('starts_at', new Date().toISOString())
+        .order('starts_at', { ascending: true }),
+      supabase
+        .from('clubs')
+        .select('id, name, club_members(id)')
+        .order('name', { ascending: true }),
+    ])
+
+    if (eventsRes.error) console.error('[explore] events error:', eventsRes.error.message)
+    else setEvents(eventsRes.data as unknown as DbEvent[])
+
+    if (clubsRes.error) console.error('[explore] clubs error:', clubsRes.error.message)
+    else setClubs(clubsRes.data as unknown as DbClub[])
+
+    setLoading(false)
+  }
+
+  const filteredEvents = useCallback(() => {
+    let list = events
+
+    if (searchText.trim()) {
+      const q = searchText.toLowerCase()
+      list = list.filter(
+        (e) =>
+          e.name.toLowerCase().includes(q) ||
+          (e.clubs?.name ?? '').toLowerCase().includes(q) ||
+          (e.address ?? '').toLowerCase().includes(q),
+      )
+    }
+
+    if (activeFilter === 'Dnes') {
+      const today = new Date().toDateString()
+      list = list.filter((e) => new Date(e.starts_at).toDateString() === today)
+    }
+
+    if (activeFilter === 'Blízko' && userLocation) {
+      list = list
+        .filter((e) => e.lat != null && e.lng != null)
+        .sort((a, b) => {
+          const dA = haversineKm(userLocation.lat, userLocation.lng, a.lat!, a.lng!)
+          const dB = haversineKm(userLocation.lat, userLocation.lng, b.lat!, b.lng!)
+          return dA - dB
+        })
+        .slice(0, 10)
+    }
+
+    return list
+  }, [events, searchText, activeFilter, userLocation])
+
+  const filteredClubs = useCallback(() => {
+    if (!searchText.trim()) return clubs
+    const q = searchText.toLowerCase()
+    return clubs.filter((c) => c.name.toLowerCase().includes(q))
+  }, [clubs, searchText])
+
+  const visibleEvents = filteredEvents()
+  const visibleClubs = filteredClubs()
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Explore</Text>
+          <Text style={styles.title}>Najít</Text>
           <View style={styles.searchBar}>
             <Search size={16} color={COLORS.muted} strokeWidth={2} />
-            <Text style={styles.searchPlaceholder}>Hledat klub nebo akci…</Text>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Hledat klub nebo akci…"
+              placeholderTextColor={COLORS.muted}
+              value={searchText}
+              onChangeText={setSearchText}
+              returnKeyType="search"
+            />
           </View>
         </View>
 
@@ -67,55 +187,88 @@ export default function ExploreScreen() {
           ))}
         </View>
 
-        {/* Event cards */}
-        {EVENTS.map((event) => (
-          <View key={event.id} style={styles.eventCard}>
-            <View style={styles.eventCardTop}>
-              <Text style={styles.eventTag}>{event.club}</Text>
-              <Text style={styles.eventName}>{event.name}</Text>
-              <Text style={styles.eventMeta}>{event.meta}</Text>
-            </View>
-            <View style={styles.eventCardBottom}>
-              <View style={styles.avatars}>
-                {event.attendees.map((letter, i) => (
-                  <View
-                    key={i}
-                    style={[
-                      styles.avatar,
-                      { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
-                    ]}
-                  >
-                    <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
-                      {letter}
-                    </Text>
+        {loading ? (
+          <View style={styles.loadingState}>
+            <ActivityIndicator size="small" color={COLORS.accent} />
+          </View>
+        ) : (
+          <>
+            {/* Event cards */}
+            {visibleEvents.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyText}>Žádné běhy nenalezeny</Text>
+              </View>
+            ) : (
+              visibleEvents.map((event) => {
+                const attendees = event.event_participants ?? []
+                const extra = Math.max(0, attendees.length - 3)
+                const shown = attendees.slice(0, 3)
+                return (
+                  <View key={event.id} style={styles.eventCard}>
+                    <View style={styles.eventCardTop}>
+                      <Text style={styles.eventTag}>{event.clubs?.name ?? 'Neznámý klub'}</Text>
+                      <Text style={styles.eventName}>{event.name}</Text>
+                      <Text style={styles.eventMeta}>
+                        {getDayLabel(event.starts_at)} · {getTimeLabel(event.starts_at)}
+                        {event.address ? ` · ${event.address}` : ''}
+                      </Text>
+                    </View>
+                    <View style={styles.eventCardBottom}>
+                      <View style={styles.avatars}>
+                        {shown.map((_, i) => (
+                          <View
+                            key={i}
+                            style={[
+                              styles.avatar,
+                              { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
+                            ]}
+                          >
+                            <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
+                              {i + 1}
+                            </Text>
+                          </View>
+                        ))}
+                        {extra > 0 && (
+                          <View style={[styles.avatar, styles.avatarExtra]}>
+                            <Text style={styles.avatarExtraText}>+{extra}</Text>
+                          </View>
+                        )}
+                        {attendees.length === 0 && (
+                          <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
+                        )}
+                      </View>
+                      <TouchableOpacity style={styles.joinBtn}>
+                        <Text style={styles.joinBtnText}>Přidat se</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                ))}
-                <View style={[styles.avatar, styles.avatarExtra]}>
-                  <Text style={styles.avatarExtraText}>+{event.extra}</Text>
+                )
+              })
+            )}
+
+            {/* Popular clubs */}
+            {visibleClubs.length > 0 && (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>
+                    {searchText.trim() ? 'Kluby' : 'Populární kluby'}
+                  </Text>
+                </View>
+                <View style={styles.clubsRow}>
+                  {visibleClubs.slice(0, 3).map((club) => (
+                    <TouchableOpacity key={club.id} style={styles.clubCard}>
+                      <Text style={styles.clubEmoji}>🏃</Text>
+                      <Text style={styles.clubName}>{club.name}</Text>
+                      <Text style={styles.clubMembers}>
+                        {(club.club_members?.length ?? 0)} členů
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
               </View>
-              <TouchableOpacity style={styles.joinBtn}>
-                <Text style={styles.joinBtnText}>Přidat se</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ))}
-
-        {/* Popular clubs */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Populární kluby</Text>
-          </View>
-          <View style={styles.clubsRow}>
-            {CLUBS.map((club) => (
-              <TouchableOpacity key={club.id} style={styles.clubCard}>
-                <Text style={styles.clubEmoji}>{club.emoji}</Text>
-                <Text style={styles.clubName}>{club.name}</Text>
-                <Text style={styles.clubMembers}>{club.members} členů</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+            )}
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   )
@@ -149,9 +302,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
-  searchPlaceholder: {
+  searchInput: {
+    flex: 1,
     fontSize: 14,
-    color: COLORS.muted,
+    color: COLORS.text,
+    padding: 0,
   },
   filterRow: {
     flexDirection: 'row',
@@ -180,6 +335,18 @@ const styles = StyleSheet.create({
   },
   filterTextActive: {
     color: '#FFF',
+  },
+  loadingState: {
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  emptyState: {
+    paddingVertical: 32,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 14,
+    color: COLORS.muted,
   },
   eventCard: {
     backgroundColor: COLORS.surface,
@@ -226,6 +393,7 @@ const styles = StyleSheet.create({
   },
   avatars: {
     flexDirection: 'row',
+    alignItems: 'center',
   },
   avatar: {
     width: 28,
@@ -243,10 +411,15 @@ const styles = StyleSheet.create({
   },
   avatarExtra: {
     backgroundColor: COLORS.bg,
+    marginRight: 0,
   },
   avatarExtraText: {
     fontSize: 10,
     fontWeight: '600',
+    color: COLORS.muted,
+  },
+  noAttendeesText: {
+    fontSize: 12,
     color: COLORS.muted,
   },
   joinBtn: {
