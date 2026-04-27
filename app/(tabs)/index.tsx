@@ -1,66 +1,129 @@
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Animated,
+  PanResponder,
+  Modal,
+  Pressable,
+} from 'react-native'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { COLORS } from '../../constants/theme'
+
+const FOCUSED_DELTA = 0.012
 
 const FILTERS = ['Dnes', 'Zítra', 'Tento týden']
 
 const RUNS = [
   {
-    id: 1,
-    name: 'Letňáci',
-    time: '18:30',
-    people: 12,
-    lat: 50.1020,
-    lng: 14.4095,
-    highlight: true,
-    emoji: '🏃',
-    place: 'Letná park',
-    label: 'Letňáci Run',
-    dayLabel: 'Dnes',
+    id: 1, name: 'Letňáci', time: '18:30', people: 12,
+    lat: 50.1020, lng: 14.4095, highlight: true,
+    emoji: '🏃', place: 'Letná park', label: 'Letňáci Run', dayLabel: 'Dnes',
+    pace: '5:30 / km', distance: '6 km',
+    address: 'Hanavský pavilon, Letenské sady, Praha 7',
   },
   {
-    id: 2,
-    name: 'Park Runners',
-    time: '19:00',
-    people: 7,
-    lat: 50.0978,
-    lng: 14.4285,
-    highlight: false,
-    emoji: '🌅',
-    place: 'Stromovka vstup',
-    label: 'Park Runners',
-    dayLabel: 'Zítra',
+    id: 2, name: 'Park Runners', time: '19:00', people: 7,
+    lat: 50.0978, lng: 14.4285, highlight: false,
+    emoji: '🌅', place: 'Stromovka vstup', label: 'Park Runners', dayLabel: 'Zítra',
+    pace: '6:00 / km', distance: '8 km',
+    address: 'Vstup Stromovka, Nad Královskou oborou, Praha 7',
   },
   {
-    id: 3,
-    name: 'Žižkov Gang',
-    time: '7:00',
-    people: 5,
-    lat: 50.0862,
-    lng: 14.4520,
-    highlight: false,
-    emoji: '🌿',
-    place: 'Vítkov',
-    label: 'Žižkov Gang',
-    dayLabel: 'Zítra',
+    id: 3, name: 'Žižkov Gang', time: '7:00', people: 5,
+    lat: 50.0862, lng: 14.4520, highlight: false,
+    emoji: '🌿', place: 'Vítkov', label: 'Žižkov Gang', dayLabel: 'Zítra',
+    pace: '5:00 / km', distance: '10 km',
+    address: 'Pomník Jana Žižky, Vítkov, Praha 3',
   },
 ]
 
+type Run = typeof RUNS[0]
+
+const SHEET_HEIGHT = 300
+const PEEK = 52        // viditelná výška v collapsed stavu
+const EXPANDED = 260   // viditelná výška v expanded stavu
+
 export default function MapaScreen() {
   const [activeFilter, setActiveFilter] = useState('Dnes')
+  const [containerH, setContainerH] = useState(0)
+  const [selectedRun, setSelectedRun] = useState<Run | null>(null)
+  const insets = useSafeAreaInsets()
+  const mapRef = useRef<MapView>(null)
+
+  const openRun = (run: Run) => {
+    setSelectedRun(run)
+    mapRef.current?.animateToRegion(
+      {
+        latitude: run.lat,
+        longitude: run.lng,
+        latitudeDelta: FOCUSED_DELTA,
+        longitudeDelta: FOCUSED_DELTA,
+      },
+      400,
+    )
+  }
+
+  // translateY: 0 = collapsed (jen PEEK viditelné), záporné = expanded (více viditelné)
+  const translateY = useRef(new Animated.Value(0)).current
+  const lastY = useRef(0)
+  const isExpanded = useRef(false)
+
+  const snapTo = (expand: boolean) => {
+    const toValue = expand ? -(EXPANDED - PEEK) : 0
+    isExpanded.current = expand
+    lastY.current = toValue
+    Animated.spring(translateY, {
+      toValue,
+      useNativeDriver: true,
+      bounciness: 4,
+    }).start()
+  }
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 4,
+      onPanResponderGrant: () => {
+        translateY.stopAnimation((val) => { lastY.current = val })
+      },
+      onPanResponderMove: (_, g) => {
+        // dy záporné = tah nahoru, kladné = dolů
+        const next = Math.min(0, Math.max(-(EXPANDED - PEEK), lastY.current + g.dy))
+        translateY.setValue(next)
+      },
+      onPanResponderRelease: (_, g) => {
+        if (Math.abs(g.dy) < 8) {
+          snapTo(!isExpanded.current)
+          return
+        }
+        if (g.vy < -0.3 || lastY.current + g.dy < -(EXPANDED - PEEK) / 2) {
+          snapTo(true)
+        } else {
+          snapTo(false)
+        }
+      },
+    })
+  ).current
+
+  // Top pozice sheetu: spodek kontejneru minus PEEK výška
+  const sheetTop = containerH > 0 ? containerH - PEEK : 9999
 
   return (
-    <View style={styles.container}>
+    <View
+      style={styles.container}
+      onLayout={(e) => setContainerH(e.nativeEvent.layout.height)}
+    >
       <MapView
-        style={styles.map}
+        ref={mapRef}
+        style={StyleSheet.absoluteFill}
         provider={PROVIDER_DEFAULT}
         initialRegion={{
-          latitude: 50.0940,
-          longitude: 14.4295,
-          latitudeDelta: 0.045,
-          longitudeDelta: 0.045,
+          latitude: 50.0940, longitude: 14.4295,
+          latitudeDelta: 0.045, longitudeDelta: 0.045,
         }}
         showsUserLocation
         showsMyLocationButton={false}
@@ -70,17 +133,18 @@ export default function MapaScreen() {
             key={run.id}
             coordinate={{ latitude: run.lat, longitude: run.lng }}
             anchor={{ x: 0.5, y: 1 }}
+            onPress={() => openRun(run)}
           >
             <View style={styles.pinContainer}>
-              <View style={[styles.pinBubble, run.highlight && styles.pinBubbleHighlight]}>
-                <Text style={[styles.pinName, run.highlight && styles.pinTextHighlight]}>
+              <View style={[styles.pinBubble, selectedRun?.id === run.id && styles.pinBubbleHighlight]}>
+                <Text style={[styles.pinName, selectedRun?.id === run.id && styles.pinTextHighlight]}>
                   {run.name}
                 </Text>
-                <Text style={[styles.pinMeta, run.highlight && styles.pinTextHighlight]}>
+                <Text style={[styles.pinMeta, selectedRun?.id === run.id && styles.pinTextHighlight]}>
                   {run.time} · {run.people} lidí
                 </Text>
               </View>
-              <View style={[styles.pinTail, run.highlight && styles.pinTailHighlight]} />
+              <View style={[styles.pinTail, selectedRun?.id === run.id && styles.pinTailHighlight]} />
             </View>
           </Marker>
         ))}
@@ -107,26 +171,104 @@ export default function MapaScreen() {
         </View>
       </SafeAreaView>
 
-      {/* Bottom sheet */}
-      <View style={styles.bottomSheet}>
-        <View style={styles.sheetHandle} />
-        <Text style={styles.sheetLabel}>Blízko tebe</Text>
+      {/* Bottom sheet — top je vypočítané z onLayout, translateY posouvá nahoru */}
+      <Animated.View
+        style={[
+          styles.bottomSheet,
+          {
+            top: sheetTop,
+            height: SHEET_HEIGHT,
+            paddingBottom: insets.bottom + 8,
+            transform: [{ translateY }],
+          },
+        ]}
+      >
+        <View {...panResponder.panHandlers} style={styles.handleArea}>
+          <View style={styles.sheetHandle} />
+          <View style={styles.sheetLabelRow}>
+            <Text style={styles.sheetLabel}>Blízko tebe</Text>
+            <Text style={styles.sheetLabelCol}>běžci</Text>
+          </View>
+        </View>
 
         {RUNS.map((run, i) => (
-          <View key={run.id} style={[styles.runCard, i < RUNS.length - 1 && styles.runCardBorder]}>
+          <TouchableOpacity
+            key={run.id}
+            style={[styles.runCard, i < RUNS.length - 1 && styles.runCardBorder]}
+            onPress={() => openRun(run)}
+            activeOpacity={0.7}
+          >
             <View style={styles.runDot}>
               <Text style={styles.runEmoji}>{run.emoji}</Text>
             </View>
             <View style={styles.runInfo}>
               <Text style={styles.runName}>{run.label}</Text>
-              <Text style={styles.runTime}>
-                {run.dayLabel} {run.time} · {run.place}
-              </Text>
+              <Text style={styles.runTime}>{run.dayLabel} {run.time} · {run.place}</Text>
             </View>
             <Text style={styles.runCount}>{run.people}</Text>
-          </View>
+          </TouchableOpacity>
         ))}
-      </View>
+      </Animated.View>
+      {/* Run detail modal */}
+      <Modal
+        visible={selectedRun !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedRun(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedRun(null)}>
+          <Pressable style={styles.modalSheet} onPress={() => {}}>
+            {selectedRun && (
+              <>
+                <View style={styles.modalHandle} />
+
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalEmoji}>{selectedRun.emoji}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalTitle}>{selectedRun.label}</Text>
+                    <Text style={styles.modalClub}>{selectedRun.name}</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setSelectedRun(null)} style={styles.modalClose}>
+                    <Text style={styles.modalCloseText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.modalStats}>
+                  <View style={styles.modalStat}>
+                    <Text style={styles.modalStatValue}>{selectedRun.people}</Text>
+                    <Text style={styles.modalStatLabel}>běžci</Text>
+                  </View>
+                  <View style={styles.modalStatDivider} />
+                  <View style={styles.modalStat}>
+                    <Text style={styles.modalStatValue}>{selectedRun.distance}</Text>
+                    <Text style={styles.modalStatLabel}>vzdálenost</Text>
+                  </View>
+                  <View style={styles.modalStatDivider} />
+                  <View style={styles.modalStat}>
+                    <Text style={styles.modalStatValue}>{selectedRun.pace}</Text>
+                    <Text style={styles.modalStatLabel}>tempo</Text>
+                  </View>
+                </View>
+
+                <View style={styles.modalInfoRow}>
+                  <Text style={styles.modalInfoIcon}>🕐</Text>
+                  <Text style={styles.modalInfoText}>
+                    {selectedRun.dayLabel} · {selectedRun.time}
+                  </Text>
+                </View>
+                <View style={styles.modalInfoRow}>
+                  <Text style={styles.modalInfoIcon}>📍</Text>
+                  <Text style={styles.modalInfoText}>{selectedRun.address}</Text>
+                </View>
+
+                <TouchableOpacity style={styles.modalJoinBtn}>
+                  <Text style={styles.modalJoinText}>Přidat se</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 }
@@ -136,20 +278,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.bg,
   },
-  map: {
-    flex: 1,
-  },
   headerOverlay: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
+    top: 0, left: 0, right: 0,
     zIndex: 10,
+    backgroundColor: COLORS.bg,
   },
   header: {
     padding: 16,
     paddingBottom: 12,
-    backgroundColor: 'rgba(245,243,240,0.95)',
+    backgroundColor: COLORS.bg,
   },
   mapTitle: {
     fontSize: 22,
@@ -177,20 +315,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
-  filterChipActive: {
-    backgroundColor: COLORS.accent,
-  },
+  filterChipActive: { backgroundColor: COLORS.accent },
   filterText: {
     fontSize: 12,
     fontWeight: '500',
     color: COLORS.muted,
   },
-  filterTextActive: {
-    color: '#FFF',
-  },
-  pinContainer: {
-    alignItems: 'center',
-  },
+  filterTextActive: { color: '#FFF' },
+  pinContainer: { alignItems: 'center' },
   pinBubble: {
     backgroundColor: COLORS.surface,
     borderRadius: 12,
@@ -203,60 +335,49 @@ const styles = StyleSheet.create({
     elevation: 4,
     minWidth: 90,
   },
-  pinBubbleHighlight: {
-    backgroundColor: COLORS.accent,
-  },
-  pinName: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
-  pinMeta: {
-    fontSize: 10,
-    color: COLORS.muted,
-    marginTop: 1,
-  },
-  pinTextHighlight: {
-    color: '#FFF',
-  },
+  pinBubbleHighlight: { backgroundColor: COLORS.accent },
+  pinName: { fontSize: 11, fontWeight: '700', color: COLORS.text },
+  pinMeta: { fontSize: 10, color: COLORS.muted, marginTop: 1 },
+  pinTextHighlight: { color: '#FFF' },
   pinTail: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 6,
-    borderRightWidth: 6,
-    borderTopWidth: 7,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
+    width: 0, height: 0,
+    borderLeftWidth: 6, borderRightWidth: 6, borderTopWidth: 7,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
     borderTopColor: COLORS.surface,
     marginTop: -1,
   },
-  pinTailHighlight: {
-    borderTopColor: COLORS.accent,
-  },
+  pinTailHighlight: { borderTopColor: COLORS.accent },
   bottomSheet: {
     position: 'absolute',
-    bottom: 0,
     left: 0,
     right: 0,
     backgroundColor: COLORS.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 100,
     shadowColor: '#000',
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.12,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: -4 },
     elevation: 8,
+    zIndex: 20,
+  },
+  handleArea: {
+    paddingTop: 10,
+    paddingBottom: 4,
   },
   sheetHandle: {
-    width: 36,
-    height: 4,
+    width: 36, height: 4,
     backgroundColor: COLORS.border,
     borderRadius: 2,
     alignSelf: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
+  },
+  sheetLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
   },
   sheetLabel: {
     fontSize: 11,
@@ -264,7 +385,13 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     letterSpacing: 0.8,
     textTransform: 'uppercase',
-    marginBottom: 8,
+  },
+  sheetLabelCol: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.muted,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
   runCard: {
     flexDirection: 'row',
@@ -277,32 +404,122 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   runDot: {
-    width: 36,
-    height: 36,
+    width: 36, height: 36,
     borderRadius: 12,
     backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  runEmoji: {
-    fontSize: 16,
-  },
-  runInfo: {
+  runEmoji: { fontSize: 16 },
+  runInfo: { flex: 1 },
+  runName: { fontSize: 13, fontWeight: '700', color: COLORS.text },
+  runTime: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
+  runCount: { fontSize: 12, fontWeight: '700', color: COLORS.accent },
+
+  // Modal
+  modalBackdrop: {
     flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
   },
-  runName: {
-    fontSize: 13,
-    fontWeight: '700',
+  modalSheet: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 20,
+    paddingBottom: 40,
+    paddingTop: 10,
+  },
+  modalHandle: {
+    width: 36, height: 4,
+    backgroundColor: COLORS.border,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 20,
+  },
+  modalEmoji: {
+    fontSize: 32,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
     color: COLORS.text,
   },
-  runTime: {
-    fontSize: 11,
+  modalClub: {
+    fontSize: 13,
     color: COLORS.muted,
     marginTop: 2,
   },
-  runCount: {
-    fontSize: 12,
+  modalClose: {
+    width: 32, height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCloseText: {
+    fontSize: 13,
+    color: COLORS.muted,
+    fontWeight: '600',
+  },
+  modalStats: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.bg,
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  modalStat: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  modalStatValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  modalStatLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+    marginTop: 3,
+  },
+  modalStatDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: COLORS.border,
+  },
+  modalInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 12,
+  },
+  modalInfoIcon: {
+    fontSize: 16,
+  },
+  modalInfoText: {
+    fontSize: 14,
+    color: COLORS.text,
+    flex: 1,
+    lineHeight: 20,
+  },
+  modalJoinBtn: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 20,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  modalJoinText: {
+    fontSize: 16,
     fontWeight: '700',
-    color: COLORS.accent,
+    color: '#FFF',
   },
 })

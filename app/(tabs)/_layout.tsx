@@ -13,7 +13,9 @@ function TabIcon({ icon, label, focused }: TabIconProps) {
   return (
     <View style={styles.tabItem}>
       {icon}
-      <Text style={[styles.tabText, focused && styles.tabTextActive]}>{label}</Text>
+      <Text style={[styles.tabText, focused && styles.tabTextActive]} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   )
 }
@@ -32,7 +34,7 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <TabIcon
-              icon={<MapPin size={20} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
+              icon={<MapPin size={22} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
               label="Mapa"
               focused={focused}
             />
@@ -44,8 +46,8 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <TabIcon
-              icon={<Search size={20} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
-              label="Explore"
+              icon={<Search size={22} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
+              label="Najít"
               focused={focused}
             />
           ),
@@ -56,7 +58,7 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <TabIcon
-              icon={<Users size={20} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
+              icon={<Users size={22} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
               label="Klub"
               focused={focused}
             />
@@ -68,7 +70,7 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <TabIcon
-              icon={<Coffee size={20} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
+              icon={<Coffee size={22} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
               label="After-run"
               focused={focused}
             />
@@ -80,7 +82,7 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <TabIcon
-              icon={<User size={20} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
+              icon={<User size={22} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
               label="Profil"
               focused={focused}
             />
@@ -96,21 +98,23 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderTopColor: COLORS.border,
     borderTopWidth: 1,
-    height: 72,
-    paddingBottom: 12,
-    paddingTop: 8,
+    height: 84,
+    paddingBottom: 16,
+    paddingTop: 10,
   },
   tabItem: {
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
+    width: 64,
   },
   tabText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '500',
     color: COLORS.muted,
-    letterSpacing: 0.1,
+    flexShrink: 0,
   },
   tabTextActive: {
     color: COLORS.accent,
+    fontWeight: '600',
   },
 })

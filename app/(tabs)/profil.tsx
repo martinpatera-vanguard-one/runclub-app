@@ -3,6 +3,10 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { User, Bell, Lock, LogOut, ChevronRight } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
 
+const DAYS = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne']
+const TODAY = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1
+const RUN_DAYS = [0, 2, 4]
+
 const UPCOMING = [
   { name: 'Letná Loop', when: 'Dnes 18:30', accent: true },
   { name: 'Weekend long run', when: 'So 8:00', accent: false },
@@ -49,6 +53,43 @@ export default function ProfilScreen() {
                 <Text style={styles.upcomingWhen}>{run.when}</Text>
               </View>
             ))}
+          </View>
+        </View>
+
+        {/* Calendar */}
+        <View style={styles.section}>
+          <Text style={styles.upcomingLabel}>Můj kalendář</Text>
+          <View style={styles.calendarCard}>
+            <View style={styles.calendarRow}>
+              {DAYS.map((day, i) => {
+                const isToday = i === TODAY
+                const hasRun = RUN_DAYS.includes(i)
+                return (
+                  <View key={day} style={styles.calendarDay}>
+                    <Text style={[styles.calendarDayLabel, isToday && styles.calendarDayLabelActive]}>
+                      {day}
+                    </Text>
+                    <View style={[
+                      styles.calendarDot,
+                      hasRun && styles.calendarDotRun,
+                      isToday && styles.calendarDotToday,
+                    ]}>
+                      {isToday && <View style={styles.calendarDotInner} />}
+                    </View>
+                  </View>
+                )
+              })}
+            </View>
+            <View style={styles.calendarLegend}>
+              <View style={styles.calendarLegendItem}>
+                <View style={[styles.calendarDot, styles.calendarDotRun, { width: 8, height: 8 }]} />
+                <Text style={styles.calendarLegendText}>plánovaný běh</Text>
+              </View>
+              <View style={styles.calendarLegendItem}>
+                <View style={[styles.calendarDot, styles.calendarDotToday, { width: 8, height: 8 }]} />
+                <Text style={styles.calendarLegendText}>dnes</Text>
+              </View>
+            </View>
           </View>
         </View>
 
@@ -187,5 +228,69 @@ const styles = StyleSheet.create({
   },
   settingsLabelDanger: {
     color: '#EF4444',
+  },
+  calendarCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  calendarRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  calendarDay: {
+    alignItems: 'center',
+    gap: 8,
+  },
+  calendarDayLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: COLORS.muted,
+  },
+  calendarDayLabelActive: {
+    color: COLORS.accent,
+    fontWeight: '700',
+  },
+  calendarDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: COLORS.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarDotRun: {
+    backgroundColor: COLORS.accentSoft,
+  },
+  calendarDotToday: {
+    backgroundColor: COLORS.accent,
+  },
+  calendarDotInner: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FFF',
+  },
+  calendarLegend: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  calendarLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  calendarLegendText: {
+    fontSize: 11,
+    color: COLORS.muted,
   },
 })
