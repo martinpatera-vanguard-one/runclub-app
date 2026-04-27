@@ -8,6 +8,8 @@ node_modules/
 dist/
 web-build/
 expo-env.d.ts
+setup-github.sh
+.claude/
 
 # Native
 .kotlin/
@@ -45,3 +47,4 @@ supabase/.temp
 # generated native folders
 /ios
 /android
+.claude/

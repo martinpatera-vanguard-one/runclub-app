@@ -60,6 +60,8 @@ type DbEvent = {
   starts_at: string
   max_participants: number | null
   price_czk: number
+  distance_km: number | null
+  pace_sec_km: number | null
   clubs: { name: string } | null
   event_participants: { id: string }[]
 }
@@ -77,6 +79,15 @@ type Run = {
   maxParticipants: number | null
   priceCzk: number
   distKm: number | null
+  routeKm: number | null
+  paceSec: number | null
+}
+
+function formatPace(secPerKm: number | null): string | null {
+  if (!secPerKm) return null
+  const min = Math.floor(secPerKm / 60)
+  const sec = secPerKm % 60
+  return `${min}:${sec.toString().padStart(2, '0')} /km`
 }
 
 function mapEventToRun(event: DbEvent, userLocation: { lat: number; lng: number } | null): Run {
@@ -95,6 +106,8 @@ function mapEventToRun(event: DbEvent, userLocation: { lat: number; lng: number 
     distKm: userLocation && event.lat && event.lng
       ? haversineKm(userLocation.lat, userLocation.lng, event.lat, event.lng)
       : null,
+    routeKm: event.distance_km,
+    paceSec: event.pace_sec_km,
   }
 }
 
@@ -134,7 +147,7 @@ export default function MapaScreen() {
       .from('events')
       .select(`
         id, name, description, lat, lng, address, starts_at,
-        max_participants, price_czk,
+        max_participants, price_czk, distance_km, pace_sec_km,
         clubs(name),
         event_participants(id)
       `)
@@ -213,11 +226,20 @@ export default function MapaScreen() {
           >
             <View style={styles.pinContainer}>
               <View style={[styles.pinBubble, selectedRun?.id === run.id && styles.pinBubbleHighlight]}>
-                <Text style={[styles.pinName, selectedRun?.id === run.id && styles.pinTextHighlight]}>
-                  {run.label}
-                </Text>
+                <View style={styles.pinNameRow}>
+                  <Text style={[styles.pinName, selectedRun?.id === run.id && styles.pinTextHighlight]}>
+                    {run.label}
+                  </Text>
+                  <Text style={[styles.pinPeople, selectedRun?.id === run.id && styles.pinTextHighlight]}>
+                    {run.people}
+                  </Text>
+                </View>
                 <Text style={[styles.pinMeta, selectedRun?.id === run.id && styles.pinTextHighlight]}>
-                  {run.time} · {run.people} lidí
+                  {[
+                    run.time,
+                    run.routeKm != null ? `${run.routeKm} km` : null,
+                    formatPace(run.paceSec),
+                  ].filter(Boolean).join(' · ')}
                 </Text>
               </View>
               <View style={[styles.pinTail, selectedRun?.id === run.id && styles.pinTailHighlight]} />
@@ -287,6 +309,14 @@ export default function MapaScreen() {
             <View style={styles.runInfo}>
               <Text style={styles.runName}>{run.label}</Text>
               <Text style={styles.runTime}>{run.dayLabel} {run.time} · {run.clubName}</Text>
+              {(run.routeKm || run.paceSec) ? (
+                <Text style={styles.runStats}>
+                  {[
+                    run.routeKm ? `${run.routeKm} km` : null,
+                    formatPace(run.paceSec),
+                  ].filter(Boolean).join(' · ')}
+                </Text>
+              ) : null}
             </View>
             <View style={{ alignItems: 'flex-end', gap: 2 }}>
               <Text style={styles.runCount}>{run.people}</Text>
@@ -354,6 +384,18 @@ export default function MapaScreen() {
                     <Text style={styles.modalInfoText}>{formatDist(selectedRun.distKm)} od tebe</Text>
                   </View>
                 )}
+                {selectedRun.routeKm != null && (
+                  <View style={styles.modalInfoRow}>
+                    <Text style={styles.modalInfoIcon}>📏</Text>
+                    <Text style={styles.modalInfoText}>{selectedRun.routeKm} km</Text>
+                  </View>
+                )}
+                {selectedRun.paceSec != null && (
+                  <View style={styles.modalInfoRow}>
+                    <Text style={styles.modalInfoIcon}>⏱️</Text>
+                    <Text style={styles.modalInfoText}>{formatPace(selectedRun.paceSec)} tempo</Text>
+                  </View>
+                )}
 
                 <TouchableOpacity style={styles.modalJoinBtn}>
                   <Text style={styles.modalJoinText}>Přidat se</Text>
@@ -388,7 +430,9 @@ const styles = StyleSheet.create({
     elevation: 4, minWidth: 90,
   },
   pinBubbleHighlight: { backgroundColor: COLORS.accent },
-  pinName: { fontSize: 11, fontWeight: '700', color: COLORS.text },
+  pinNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  pinName: { fontSize: 11, fontWeight: '700', color: COLORS.text, flexShrink: 1 },
+  pinPeople: { fontSize: 11, fontWeight: '700', color: COLORS.accent },
   pinMeta: { fontSize: 10, color: COLORS.muted, marginTop: 1 },
   pinTextHighlight: { color: '#FFF' },
   pinTail: {
@@ -414,6 +458,7 @@ const styles = StyleSheet.create({
   runInfo: { flex: 1 },
   runName: { fontSize: 13, fontWeight: '700', color: COLORS.text },
   runTime: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
+  runStats: { fontSize: 10, color: COLORS.accent, marginTop: 2 },
   runDist: { fontSize: 10, color: COLORS.muted },
   runCount: { fontSize: 12, fontWeight: '700', color: COLORS.accent },
   loadingState: { paddingVertical: 16, alignItems: 'center' },

@@ -29,8 +29,17 @@ type DbEvent = {
   lng: number | null
   address: string | null
   starts_at: string
+  distance_km: number | null
+  pace_sec_km: number | null
   clubs: { name: string } | null
   event_participants: { id: string }[]
+}
+
+function formatPace(secPerKm: number | null): string | null {
+  if (!secPerKm) return null
+  const min = Math.floor(secPerKm / 60)
+  const sec = secPerKm % 60
+  return `${min}:${sec.toString().padStart(2, '0')} /km`
 }
 
 type DbClub = {
@@ -94,7 +103,7 @@ export default function NajitScreen() {
     const [eventsRes, clubsRes] = await Promise.all([
       supabase
         .from('events')
-        .select('id, name, lat, lng, address, starts_at, clubs(name), event_participants(id)')
+        .select('id, name, lat, lng, address, starts_at, distance_km, pace_sec_km, clubs(name), event_participants(id)')
         .gte('starts_at', new Date().toISOString())
         .order('starts_at', { ascending: true }),
       supabase
@@ -212,6 +221,14 @@ export default function NajitScreen() {
                         {getDayLabel(event.starts_at)} · {getTimeLabel(event.starts_at)}
                         {event.address ? ` · ${event.address}` : ''}
                       </Text>
+                      {(event.distance_km != null || event.pace_sec_km != null) && (
+                        <Text style={styles.eventRunStats}>
+                          {[
+                            event.distance_km != null ? `${event.distance_km} km` : null,
+                            formatPace(event.pace_sec_km),
+                          ].filter(Boolean).join(' · ')}
+                        </Text>
+                      )}
                     </View>
                     <View style={styles.eventCardBottom}>
                       <View style={styles.avatars}>
@@ -381,6 +398,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     marginTop: 3,
+  },
+  eventRunStats: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.accent,
+    marginTop: 5,
   },
   eventCardBottom: {
     flexDirection: 'row',

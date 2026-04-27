@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router'
 import { View, Text, StyleSheet } from 'react-native'
-import { MapPin, Search, Users, Coffee, User } from 'lucide-react-native'
+import { MapPin, Search, Users, User } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
 
 type TabIconProps = {
@@ -65,17 +65,10 @@ export default function TabLayout() {
           ),
         }}
       />
+      {/* after-run tab — skryto pro MVP, soubor after-run.tsx zůstává */}
       <Tabs.Screen
         name="after-run"
-        options={{
-          tabBarIcon: ({ focused }) => (
-            <TabIcon
-              icon={<Coffee size={22} color={focused ? COLORS.accent : COLORS.muted} strokeWidth={1.8} />}
-              label="After-run"
-              focused={focused}
-            />
-          ),
-        }}
+        options={{ href: null }}
       />
       <Tabs.Screen
         name="profil"

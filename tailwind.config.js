@@ -5,8 +5,8 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        accent: "#FF4500",
-        "accent-dark": "#CC3700",
+        accent: "#0096c7",
+        "accent-dark": "#007aa3",
       },
       borderRadius: {
         "2xl": "24px",

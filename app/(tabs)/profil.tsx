@@ -1,7 +1,9 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native'
+import { useEffect, useState } from 'react'
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { User, Bell, Lock, LogOut, ChevronRight } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
+import { supabase } from '../../lib/supabase'
 
 const DAYS = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne']
 const TODAY = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1
@@ -19,36 +21,88 @@ const SETTINGS = [
   { icon: LogOut, label: 'Odhlásit se', danger: true },
 ]
 
+type Profile = {
+  full_name: string
+  email: string
+}
+
 export default function ProfilScreen() {
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function fetchProfile() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('id', user.id)
+        .single()
+
+      setProfile({
+        full_name: data?.full_name ?? user.user_metadata?.full_name ?? '',
+        email: user.email ?? '',
+      })
+      setLoading(false)
+    }
+
+    fetchProfile()
+  }, [])
+
+  const handleSignOut = () => {
+    Alert.alert('Odhlásit se', 'Opravdu se chceš odhlásit?', [
+      { text: 'Zrušit', style: 'cancel' },
+      {
+        text: 'Odhlásit',
+        style: 'destructive',
+        onPress: () => supabase.auth.signOut(),
+      },
+    ])
+  }
+
+  const avatarLetter = profile?.full_name?.charAt(0).toUpperCase() ?? '?'
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView showsVerticalScrollIndicator={false}>
+
         {/* Avatar + name */}
         <View style={styles.profileTop}>
           <View style={styles.avatarBig}>
-            <Text style={styles.avatarLetter}>M</Text>
+            {loading ? (
+              <ActivityIndicator color={COLORS.accent} size="small" />
+            ) : (
+              <Text style={styles.avatarLetter}>{avatarLetter}</Text>
+            )}
           </View>
-          <Text style={styles.profileName}>Marek Novák</Text>
-          <Text style={styles.profileClub}>
-            Home klub:{' '}
-            <Text style={{ color: COLORS.accent, fontWeight: '600' }}>Letňáci Run Club</Text>
-          </Text>
+
+          {loading ? (
+            <>
+              <View style={styles.skeletonName} />
+              <View style={styles.skeletonEmail} />
+            </>
+          ) : (
+            <>
+              <Text style={styles.profileName}>{profile?.full_name}</Text>
+              <Text style={styles.profileEmail}>{profile?.email}</Text>
+            </>
+          )}
         </View>
 
         <View style={{ height: 12 }} />
 
         {/* Upcoming runs */}
         <View style={styles.section}>
-          <Text style={styles.upcomingLabel}>Moje nadcházející běhy</Text>
-          <View style={styles.upcomingCard}>
+          <Text style={styles.sectionLabel}>Moje nadcházející běhy</Text>
+          <View style={styles.card}>
             {UPCOMING.map((run, i) => (
               <View
                 key={run.name}
-                style={[styles.upcomingRow, i < UPCOMING.length - 1 && styles.upcomingRowBorder]}
+                style={[styles.upcomingRow, i < UPCOMING.length - 1 && styles.rowBorder]}
               >
-                <View
-                  style={[styles.upcomingDot, !run.accent && { backgroundColor: COLORS.muted }]}
-                />
+                <View style={[styles.upcomingDot, !run.accent && { backgroundColor: COLORS.muted }]} />
                 <Text style={styles.upcomingName}>{run.name}</Text>
                 <Text style={styles.upcomingWhen}>{run.when}</Text>
               </View>
@@ -58,8 +112,8 @@ export default function ProfilScreen() {
 
         {/* Calendar */}
         <View style={styles.section}>
-          <Text style={styles.upcomingLabel}>Můj kalendář</Text>
-          <View style={styles.calendarCard}>
+          <Text style={styles.sectionLabel}>Můj kalendář</Text>
+          <View style={styles.card}>
             <View style={styles.calendarRow}>
               {DAYS.map((day, i) => {
                 const isToday = i === TODAY
@@ -96,7 +150,12 @@ export default function ProfilScreen() {
         {/* Settings */}
         <View style={styles.section}>
           {SETTINGS.map((item) => (
-            <TouchableOpacity key={item.label} style={styles.settingsRow}>
+            <TouchableOpacity
+              key={item.label}
+              style={styles.settingsRow}
+              onPress={item.label === 'Odhlásit se' ? handleSignOut : undefined}
+              activeOpacity={0.7}
+            >
               <View style={styles.settingsIcon}>
                 <item.icon size={16} color={COLORS.muted} strokeWidth={1.8} />
               </View>
@@ -121,9 +180,10 @@ const styles = StyleSheet.create({
   },
   profileTop: {
     backgroundColor: COLORS.surface,
-    paddingTop: 24,
-    paddingBottom: 20,
+    paddingTop: 28,
+    paddingBottom: 24,
     alignItems: 'center',
+    gap: 4,
   },
   avatarBig: {
     width: 72,
@@ -144,16 +204,30 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.text,
   },
-  profileClub: {
+  profileEmail: {
     fontSize: 13,
     color: COLORS.muted,
+    marginTop: 2,
+  },
+  skeletonName: {
+    width: 140,
+    height: 20,
+    borderRadius: 6,
+    backgroundColor: COLORS.border,
     marginTop: 4,
+  },
+  skeletonEmail: {
+    width: 180,
+    height: 14,
+    borderRadius: 5,
+    backgroundColor: COLORS.border,
+    marginTop: 8,
   },
   section: {
     paddingHorizontal: 16,
     marginBottom: 8,
   },
-  upcomingLabel: {
+  sectionLabel: {
     fontSize: 11,
     fontWeight: '600',
     color: COLORS.muted,
@@ -161,7 +235,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 8,
   },
-  upcomingCard: {
+  card: {
     backgroundColor: COLORS.surface,
     borderRadius: 16,
     overflow: 'hidden',
@@ -170,6 +244,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
     elevation: 1,
+    padding: 0,
   },
   upcomingRow: {
     flexDirection: 'row',
@@ -177,7 +252,7 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 14,
   },
-  upcomingRowBorder: {
+  rowBorder: {
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
@@ -229,19 +304,10 @@ const styles = StyleSheet.create({
   settingsLabelDanger: {
     color: '#EF4444',
   },
-  calendarCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
-  },
   calendarRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    padding: 16,
   },
   calendarDay: {
     alignItems: 'center',
@@ -279,7 +345,8 @@ const styles = StyleSheet.create({
   calendarLegend: {
     flexDirection: 'row',
     gap: 16,
-    marginTop: 12,
+    marginHorizontal: 16,
+    marginBottom: 16,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
