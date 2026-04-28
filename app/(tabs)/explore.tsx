@@ -6,15 +6,18 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
+  Alert,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Search } from 'lucide-react-native'
 import { useState, useEffect, useCallback } from 'react'
+import { useFocusEffect, router } from 'expo-router'
 import * as Location from 'expo-location'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
+import { useEventParticipation } from '../../contexts/eventParticipation'
 
-const FILTERS = ['Všechny', 'Dnes', 'Blízko']
+const EVENT_FILTERS = ['Všechny', 'Dnes', 'Blízko']
 
 const AVATAR_COLORS = [
   { bg: COLORS.accentSoft, text: COLORS.accent },
@@ -35,17 +38,19 @@ type DbEvent = {
   event_participants: { id: string }[]
 }
 
+type DbClub = {
+  id: string
+  name: string
+  club_members: { id: string }[]
+}
+
+type UserLocation = { lat: number; lng: number }
+
 function formatPace(secPerKm: number | null): string | null {
   if (!secPerKm) return null
   const min = Math.floor(secPerKm / 60)
   const sec = secPerKm % 60
   return `${min}:${sec.toString().padStart(2, '0')} /km`
-}
-
-type DbClub = {
-  id: string
-  name: string
-  club_members: { id: string }[]
 }
 
 function getDayLabel(startsAt: string) {
@@ -72,19 +77,41 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-type UserLocation = { lat: number; lng: number }
-
 export default function NajitScreen() {
+  const [innerTab, setInnerTab] = useState<'behy' | 'kluby'>('behy')
   const [activeFilter, setActiveFilter] = useState('Všechny')
   const [searchText, setSearchText] = useState('')
   const [events, setEvents] = useState<DbEvent[]>([])
   const [clubs, setClubs] = useState<DbClub[]>([])
   const [loading, setLoading] = useState(true)
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [myClubIds, setMyClubIds] = useState<Set<string>>(new Set())
+  const [joiningId, setJoiningId] = useState<string | null>(null)
+  const { myEventIds, join: joinCtx, leave: leaveCtx, pendingOpenId } = useEventParticipation()
+
+  function openOnMap(eventId: string) {
+    pendingOpenId.current = eventId
+    router.navigate('/' as any)
+  }
 
   useEffect(() => {
     fetchData()
   }, [])
+
+  // Refresh členství při každém přepnutí na tento tab
+  useFocusEffect(
+    useCallback(() => {
+      supabase.auth.getUser().then(async ({ data: { user } }) => {
+        if (!user) return
+        const { data } = await supabase
+          .from('club_members')
+          .select('club_id')
+          .eq('user_id', user.id)
+        if (data) setMyClubIds(new Set(data.map((r: { club_id: string }) => r.club_id)))
+      })
+    }, [])
+  )
 
   useEffect(() => {
     if (activeFilter === 'Blízko' && !userLocation) {
@@ -100,7 +127,11 @@ export default function NajitScreen() {
 
   async function fetchData() {
     setLoading(true)
-    const [eventsRes, clubsRes] = await Promise.all([
+    const { data: { user } } = await supabase.auth.getUser()
+    const uid = user?.id ?? null
+    if (uid) setUserId(uid)
+
+    const [eventsRes, clubsRes, memberRes] = await Promise.all([
       supabase
         .from('events')
         .select('id, name, lat, lng, address, starts_at, distance_km, pace_sec_km, clubs(name), event_participants(id)')
@@ -110,20 +141,74 @@ export default function NajitScreen() {
         .from('clubs')
         .select('id, name, club_members(id)')
         .order('name', { ascending: true }),
+      uid
+        ? supabase.from('club_members').select('club_id').eq('user_id', uid)
+        : Promise.resolve({ data: [], error: null }),
     ])
 
-    if (eventsRes.error) console.error('[explore] events error:', eventsRes.error.message)
-    else setEvents(eventsRes.data as unknown as DbEvent[])
-
-    if (clubsRes.error) console.error('[explore] clubs error:', clubsRes.error.message)
-    else setClubs(clubsRes.data as unknown as DbClub[])
-
+    if (!eventsRes.error) setEvents(eventsRes.data as unknown as DbEvent[])
+    if (!clubsRes.error) setClubs(clubsRes.data as unknown as DbClub[])
+    if (memberRes.data) {
+      setMyClubIds(new Set(memberRes.data.map((r: { club_id: string }) => r.club_id)))
+    }
     setLoading(false)
+  }
+
+  async function joinEventAndNavigate(event: DbEvent) {
+    if (!userId) {
+      Alert.alert('Přihlas se', 'Pro přihlášení na běh musíš být přihlášen.')
+      return
+    }
+    setJoiningId(event.id)
+    const { error } = await supabase
+      .from('event_participants')
+      .insert({ event_id: event.id, user_id: userId })
+    if (error && !error.message.includes('duplicate')) {
+      Alert.alert('Chyba', error.message)
+      setJoiningId(null)
+      return
+    }
+    joinCtx({ id: event.id, name: event.name, starts_at: event.starts_at })
+    setEvents((prev) =>
+      prev.map((e) =>
+        e.id === event.id
+          ? { ...e, event_participants: [...(e.event_participants ?? []), { id: userId }] }
+          : e,
+      ),
+    )
+    setJoiningId(null)
+    openOnMap(event.id)
+  }
+
+  async function joinClub(clubId: string) {
+    setJoiningId(clubId)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      Alert.alert('Chyba', 'Nejsi přihlášen.')
+      setJoiningId(null)
+      return
+    }
+    const { error } = await supabase
+      .from('club_members')
+      .insert({ club_id: clubId, user_id: user.id })
+    if (error) {
+      Alert.alert('Chyba při přidávání', error.message)
+    } else {
+      setMyClubIds((prev) => new Set([...prev, clubId]))
+      setClubs((prev) =>
+        prev.map((c) =>
+          c.id === clubId
+            ? { ...c, club_members: [...(c.club_members ?? []), { id: user.id }] }
+            : c,
+        ),
+      )
+      if (!userId) setUserId(user.id)
+    }
+    setJoiningId(null)
   }
 
   const filteredEvents = useCallback(() => {
     let list = events
-
     if (searchText.trim()) {
       const q = searchText.toLowerCase()
       list = list.filter(
@@ -133,12 +218,10 @@ export default function NajitScreen() {
           (e.address ?? '').toLowerCase().includes(q),
       )
     }
-
     if (activeFilter === 'Dnes') {
       const today = new Date().toDateString()
       list = list.filter((e) => new Date(e.starts_at).toDateString() === today)
     }
-
     if (activeFilter === 'Blízko' && userLocation) {
       list = list
         .filter((e) => e.lat != null && e.lng != null)
@@ -149,7 +232,6 @@ export default function NajitScreen() {
         })
         .slice(0, 10)
     }
-
     return list
   }, [events, searchText, activeFilter, userLocation])
 
@@ -164,26 +246,46 @@ export default function NajitScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Najít</Text>
-          <View style={styles.searchBar}>
-            <Search size={16} color={COLORS.muted} strokeWidth={2} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Hledat klub nebo akci…"
-              placeholderTextColor={COLORS.muted}
-              value={searchText}
-              onChangeText={setSearchText}
-              returnKeyType="search"
-            />
-          </View>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Najít</Text>
+        <View style={styles.searchBar}>
+          <Search size={16} color={COLORS.muted} strokeWidth={2} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder={innerTab === 'behy' ? 'Hledat běh nebo akci…' : 'Hledat klub…'}
+            placeholderTextColor={COLORS.muted}
+            value={searchText}
+            onChangeText={setSearchText}
+            returnKeyType="search"
+          />
         </View>
+      </View>
 
-        {/* Filters */}
+      {/* Inner tabs */}
+      <View style={styles.innerTabRow}>
+        <TouchableOpacity
+          style={[styles.innerTab, innerTab === 'behy' && styles.innerTabActive]}
+          onPress={() => setInnerTab('behy')}
+        >
+          <Text style={[styles.innerTabText, innerTab === 'behy' && styles.innerTabTextActive]}>
+            Běhy
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.innerTab, innerTab === 'kluby' && styles.innerTabActive]}
+          onPress={() => setInnerTab('kluby')}
+        >
+          <Text style={[styles.innerTabText, innerTab === 'kluby' && styles.innerTabTextActive]}>
+            Kluby
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Event filters — only for Běhy tab */}
+      {innerTab === 'behy' && (
         <View style={styles.filterRow}>
-          {FILTERS.map((f) => (
+          {EVENT_FILTERS.map((f) => (
             <TouchableOpacity
               key={f}
               style={[styles.filterChip, activeFilter === f && styles.filterChipActive]}
@@ -195,98 +297,151 @@ export default function NajitScreen() {
             </TouchableOpacity>
           ))}
         </View>
+      )}
 
-        {loading ? (
-          <View style={styles.loadingState}>
-            <ActivityIndicator size="small" color={COLORS.accent} />
-          </View>
-        ) : (
-          <>
-            {/* Event cards */}
-            {visibleEvents.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyText}>Žádné běhy nenalezeny</Text>
-              </View>
-            ) : (
-              visibleEvents.map((event) => {
-                const attendees = event.event_participants ?? []
-                const extra = Math.max(0, attendees.length - 3)
-                const shown = attendees.slice(0, 3)
-                return (
-                  <View key={event.id} style={styles.eventCard}>
-                    <View style={styles.eventCardTop}>
-                      <Text style={styles.eventTag}>{event.clubs?.name ?? 'Neznámý klub'}</Text>
-                      <Text style={styles.eventName}>{event.name}</Text>
-                      <Text style={styles.eventMeta}>
-                        {getDayLabel(event.starts_at)} · {getTimeLabel(event.starts_at)}
-                        {event.address ? ` · ${event.address}` : ''}
-                      </Text>
-                      {(event.distance_km != null || event.pace_sec_km != null) && (
-                        <Text style={styles.eventRunStats}>
-                          {[
-                            event.distance_km != null ? `${event.distance_km} km` : null,
-                            formatPace(event.pace_sec_km),
-                          ].filter(Boolean).join(' · ')}
-                        </Text>
+      {loading ? (
+        <View style={styles.loadingState}>
+          <ActivityIndicator size="small" color={COLORS.accent} />
+        </View>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          {/* BĚHY TAB */}
+          {innerTab === 'behy' && (
+            <>
+              {visibleEvents.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyText}>Žádné běhy nenalezeny</Text>
+                </View>
+              ) : (
+                <View style={{ paddingTop: 8 }}>
+                  {visibleEvents.map((event) => {
+                    const attendees = event.event_participants ?? []
+                    const extra = Math.max(0, attendees.length - 3)
+                    const shown = attendees.slice(0, 3)
+                    return (
+                      <TouchableOpacity
+                        key={event.id}
+                        style={styles.eventCard}
+                        activeOpacity={0.75}
+                        onPress={() => openOnMap(event.id)}
+                      >
+                        <View style={styles.eventCardTop}>
+                          <Text style={styles.eventTag}>{event.clubs?.name ?? 'Neznámý klub'}</Text>
+                          <Text style={styles.eventName}>{event.name}</Text>
+                          <Text style={styles.eventMeta}>
+                            {getDayLabel(event.starts_at)} · {getTimeLabel(event.starts_at)}
+                            {event.address ? ` · ${event.address}` : ''}
+                          </Text>
+                          {(event.distance_km != null || event.pace_sec_km != null) && (
+                            <Text style={styles.eventRunStats}>
+                              {[
+                                event.distance_km != null ? `${event.distance_km} km` : null,
+                                formatPace(event.pace_sec_km),
+                              ].filter(Boolean).join(' · ')}
+                            </Text>
+                          )}
+                        </View>
+                        <View style={styles.eventCardBottom}>
+                          <View style={styles.avatars}>
+                            {shown.map((_, i) => (
+                              <View
+                                key={i}
+                                style={[
+                                  styles.avatar,
+                                  { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
+                                ]}
+                              >
+                                <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
+                                  {i + 1}
+                                </Text>
+                              </View>
+                            ))}
+                            {extra > 0 && (
+                              <View style={[styles.avatar, styles.avatarExtra]}>
+                                <Text style={styles.avatarExtraText}>+{extra}</Text>
+                              </View>
+                            )}
+                            {attendees.length === 0 && (
+                              <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
+                            )}
+                          </View>
+                          {myEventIds.has(event.id) ? (
+                            <TouchableOpacity
+                              style={styles.joinBtnRegistered}
+                              onPress={() => openOnMap(event.id)}
+                            >
+                              <Text style={styles.joinBtnRegisteredText}>Přihlášen ✓</Text>
+                            </TouchableOpacity>
+                          ) : (
+                            <TouchableOpacity
+                              style={[styles.joinBtn, joiningId === event.id && { opacity: 0.6 }]}
+                              onPress={() => joinEventAndNavigate(event)}
+                              disabled={joiningId === event.id}
+                            >
+                              {joiningId === event.id
+                                ? <ActivityIndicator size="small" color="#FFF" />
+                                : <Text style={styles.joinBtnText}>Přidat se</Text>
+                              }
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    )
+                  })}
+                </View>
+              )}
+            </>
+          )}
+
+          {/* KLUBY TAB */}
+          {innerTab === 'kluby' && (
+            <View style={{ paddingTop: 8 }}>
+              {visibleClubs.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyText}>Žádné kluby nenalezeny</Text>
+                </View>
+              ) : (
+                visibleClubs.map((club) => {
+                  const isMember = myClubIds.has(club.id)
+                  const isJoining = joiningId === club.id
+                  return (
+                    <View key={club.id} style={styles.clubCard}>
+                      <View style={styles.clubCardLeft}>
+                        <View style={styles.clubIconWrapper}>
+                          <Text style={styles.clubIcon}>🏃</Text>
+                        </View>
+                        <View>
+                          <Text style={styles.clubName}>{club.name}</Text>
+                          <Text style={styles.clubMembers}>
+                            {club.club_members?.length ?? 0} členů
+                          </Text>
+                        </View>
+                      </View>
+                      {isMember ? (
+                        <View style={styles.memberBadge}>
+                          <Text style={styles.memberBadgeText}>Člen ✓</Text>
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={[styles.joinClubBtn, isJoining && styles.joinClubBtnDisabled]}
+                          onPress={() => joinClub(club.id)}
+                          disabled={isJoining}
+                        >
+                          <Text style={styles.joinClubBtnText}>
+                            {isJoining ? '…' : 'Přidat se'}
+                          </Text>
+                        </TouchableOpacity>
                       )}
                     </View>
-                    <View style={styles.eventCardBottom}>
-                      <View style={styles.avatars}>
-                        {shown.map((_, i) => (
-                          <View
-                            key={i}
-                            style={[
-                              styles.avatar,
-                              { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
-                            ]}
-                          >
-                            <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
-                              {i + 1}
-                            </Text>
-                          </View>
-                        ))}
-                        {extra > 0 && (
-                          <View style={[styles.avatar, styles.avatarExtra]}>
-                            <Text style={styles.avatarExtraText}>+{extra}</Text>
-                          </View>
-                        )}
-                        {attendees.length === 0 && (
-                          <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
-                        )}
-                      </View>
-                      <TouchableOpacity style={styles.joinBtn}>
-                        <Text style={styles.joinBtnText}>Přidat se</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )
-              })
-            )}
+                  )
+                })
+              )}
+            </View>
+          )}
 
-            {/* Popular clubs */}
-            {visibleClubs.length > 0 && (
-              <View style={styles.section}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>
-                    {searchText.trim() ? 'Kluby' : 'Populární kluby'}
-                  </Text>
-                </View>
-                <View style={styles.clubsRow}>
-                  {visibleClubs.slice(0, 3).map((club) => (
-                    <TouchableOpacity key={club.id} style={styles.clubCard}>
-                      <Text style={styles.clubEmoji}>🏃</Text>
-                      <Text style={styles.clubName}>{club.name}</Text>
-                      <Text style={styles.clubMembers}>
-                        {(club.club_members?.length ?? 0)} členů
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-            )}
-          </>
-        )}
-      </ScrollView>
+          <View style={{ height: 20 }} />
+        </ScrollView>
+      )}
     </SafeAreaView>
   )
 }
@@ -325,6 +480,41 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     padding: 0,
   },
+  innerTabRow: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 14,
+    backgroundColor: COLORS.surface,
+    borderRadius: 14,
+    padding: 3,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  innerTab: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 11,
+  },
+  innerTabActive: {
+    backgroundColor: COLORS.accent,
+    shadowColor: COLORS.accent,
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  innerTabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.muted,
+  },
+  innerTabTextActive: {
+    color: '#FFF',
+  },
   filterRow: {
     flexDirection: 'row',
     gap: 8,
@@ -358,13 +548,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyState: {
-    paddingVertical: 32,
+    paddingVertical: 48,
     alignItems: 'center',
   },
   emptyText: {
     fontSize: 14,
     color: COLORS.muted,
   },
+  // Event cards
   eventCard: {
     backgroundColor: COLORS.surface,
     borderRadius: 20,
@@ -450,51 +641,90 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 18,
     paddingVertical: 8,
+    minWidth: 90,
+    alignItems: 'center',
   },
   joinBtnText: {
     fontSize: 13,
     fontWeight: '700',
     color: '#FFF',
   },
-  section: {
-    padding: 16,
-    paddingTop: 8,
+  joinBtnRegistered: {
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
   },
-  sectionHeader: {
-    marginBottom: 10,
-  },
-  sectionTitle: {
-    fontSize: 16,
+  joinBtnRegisteredText: {
+    fontSize: 13,
     fontWeight: '700',
-    color: COLORS.text,
+    color: COLORS.accent,
   },
-  clubsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
+  // Club cards
   clubCard: {
-    flex: 1,
     backgroundColor: COLORS.surface,
     borderRadius: 16,
-    padding: 12,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
     shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
+    elevation: 2,
   },
-  clubEmoji: {
+  clubCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  clubIconWrapper: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: COLORS.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clubIcon: {
     fontSize: 22,
-    marginBottom: 6,
   },
   clubName: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
     color: COLORS.text,
   },
   clubMembers: {
-    fontSize: 11,
+    fontSize: 12,
     color: COLORS.muted,
     marginTop: 2,
+  },
+  joinClubBtn: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  joinClubBtnDisabled: {
+    opacity: 0.5,
+  },
+  joinClubBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  memberBadge: {
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  memberBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.accent,
   },
 })

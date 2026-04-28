@@ -2,6 +2,7 @@ import { Tabs } from 'expo-router'
 import { View, Text, StyleSheet } from 'react-native'
 import { MapPin, Search, Users, User } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
+import { EventParticipationProvider } from '../../contexts/eventParticipation'
 
 type TabIconProps = {
   icon: React.ReactNode
@@ -22,6 +23,7 @@ function TabIcon({ icon, label, focused }: TabIconProps) {
 
 export default function TabLayout() {
   return (
+    <EventParticipationProvider>
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -83,6 +85,7 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    </EventParticipationProvider>
   )
 }
 

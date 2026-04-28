@@ -8,13 +8,17 @@ import {
   Modal,
   Pressable,
   ActivityIndicator,
+  Linking,
 } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps'
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
 import * as Location from 'expo-location'
+import { useFocusEffect } from 'expo-router'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
+import { Zap, Route } from 'lucide-react-native'
+import { useEventParticipation } from '../../contexts/eventParticipation'
 
 const FOCUSED_DELTA = 0.012
 const FILTERS = ['Dnes', 'Zítra', 'Tento týden']
@@ -75,6 +79,7 @@ type Run = {
   address: string
   time: string
   dayLabel: string
+  startsAt: string
   people: number
   maxParticipants: number | null
   priceCzk: number
@@ -100,6 +105,7 @@ function mapEventToRun(event: DbEvent, userLocation: { lat: number; lng: number 
     address: event.address ?? '',
     time: getTimeLabel(event.starts_at),
     dayLabel: getDayLabel(event.starts_at),
+    startsAt: event.starts_at,
     people: event.event_participants?.length ?? 0,
     maxParticipants: event.max_participants,
     priceCzk: event.price_czk ?? 0,
@@ -118,14 +124,19 @@ const PEEK = 52
 const EXPANDED = 260
 
 export default function MapaScreen() {
+  const { myEventIds, join: joinCtx, leave: leaveCtx, pendingOpenId } = useEventParticipation()
   const [activeFilter, setActiveFilter] = useState('Dnes')
   const [containerH, setContainerH] = useState(0)
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
   const [runs, setRuns] = useState<Run[]>([])
   const [loading, setLoading] = useState(true)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [joinLoading, setJoinLoading] = useState(false)
+  const [confirmLeaveVisible, setConfirmLeaveVisible] = useState(false)
   const insets = useSafeAreaInsets()
   const mapRef = useRef<MapView>(null)
+  const isParticipant = !!selectedRun && myEventIds.has(selectedRun.id)
 
   useEffect(() => {
     ;(async () => {
@@ -138,8 +149,38 @@ export default function MapaScreen() {
   }, [])
 
   useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
+      setUserId(session?.user?.id ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
     fetchEvents()
   }, [userLocation])
+
+  useFocusEffect(
+    useCallback(() => {
+      const id = pendingOpenId.current
+      if (!id) return
+      pendingOpenId.current = null
+      const run = runs.find((r) => r.id === id)
+      if (run) {
+        openRun(run)
+      } else if (!loading) {
+        // Runs might not be loaded yet — fetch and then open
+        supabase
+          .from('events')
+          .select('id, name, description, lat, lng, address, starts_at, max_participants, price_czk, distance_km, pace_sec_km, clubs(name), event_participants(id)')
+          .eq('id', id)
+          .single()
+          .then(({ data }) => {
+            if (data) openRun(mapEventToRun(data as any, userLocation))
+          })
+      }
+    }, [runs, loading, userLocation])
+  )
 
   async function fetchEvents() {
     setLoading(true)
@@ -163,6 +204,44 @@ export default function MapaScreen() {
     const mapped = (data as unknown as DbEvent[]).map((e) => mapEventToRun(e, userLocation))
     setRuns(mapped)
     setLoading(false)
+  }
+
+  async function handleJoin() {
+    if (!userId || !selectedRun) return
+    setJoinLoading(true)
+    const { error } = await supabase
+      .from('event_participants')
+      .insert({ event_id: selectedRun.id, user_id: userId })
+    if (!error) {
+      joinCtx({ id: selectedRun.id, name: selectedRun.label, starts_at: selectedRun.startsAt })
+      const updated = { ...selectedRun, people: selectedRun.people + 1 }
+      setSelectedRun(updated)
+      setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+    }
+    setJoinLoading(false)
+  }
+
+  async function handleLeave() {
+    if (!userId || !selectedRun) return
+    setJoinLoading(true)
+    const { error } = await supabase
+      .from('event_participants')
+      .delete()
+      .eq('event_id', selectedRun.id)
+      .eq('user_id', userId)
+    if (!error) {
+      leaveCtx(selectedRun.id)
+      const updated = { ...selectedRun, people: Math.max(0, selectedRun.people - 1) }
+      setSelectedRun(updated)
+      setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+    }
+    setConfirmLeaveVisible(false)
+    setJoinLoading(false)
+  }
+
+  const closeModal = () => {
+    setConfirmLeaveVisible(false)
+    setSelectedRun(null)
   }
 
   const openRun = (run: Run) => {
@@ -207,6 +286,18 @@ export default function MapaScreen() {
 
   const sheetTop = containerH > 0 ? containerH - PEEK : 9999
 
+  const filteredRuns = runs.filter((run) => {
+    const d = new Date(run.startsAt)
+    const today = new Date()
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1)
+    const weekEnd = new Date(today); weekEnd.setDate(today.getDate() + 7)
+    if (activeFilter === 'Dnes') return d.toDateString() === today.toDateString()
+    if (activeFilter === 'Zítra') return d.toDateString() === tomorrow.toDateString()
+    return d >= today && d < weekEnd
+  })
+
+  const filterTitle = activeFilter === 'Dnes' ? 'Dnes běžíme 🏃' : activeFilter === 'Zítra' ? 'Zítra běžíme 🏃' : 'Tento týden 🏃'
+
   return (
     <View style={styles.container} onLayout={(e) => setContainerH(e.nativeEvent.layout.height)}>
       <MapView
@@ -217,7 +308,7 @@ export default function MapaScreen() {
         showsUserLocation
         showsMyLocationButton={false}
       >
-        {runs.map((run) => (
+        {filteredRuns.map((run) => (
           <Marker
             key={run.id}
             coordinate={{ latitude: run.lat, longitude: run.lng }}
@@ -251,11 +342,11 @@ export default function MapaScreen() {
       {/* Header overlay */}
       <SafeAreaView edges={['top']} style={styles.headerOverlay}>
         <View style={styles.header}>
-          <Text style={styles.mapTitle}>Dnes běžíme 🏃</Text>
+          <Text style={styles.mapTitle}>{filterTitle}</Text>
           <Text style={styles.mapSubtitle}>
             {loading
               ? 'Načítám běhy…'
-              : `${runs.length} ${runs.length === 1 ? 'běh' : runs.length < 5 ? 'běhy' : 'běhů'} ve tvém okolí`}
+              : `${filteredRuns.length} ${filteredRuns.length === 1 ? 'běh' : filteredRuns.length < 5 ? 'běhy' : 'běhů'} ve tvém okolí`}
             {!userLocation && !loading ? ' · zjišťuji polohu…' : ''}
           </Text>
           <View style={styles.filterRow}>
@@ -290,16 +381,16 @@ export default function MapaScreen() {
           </View>
         )}
 
-        {!loading && runs.length === 0 && (
+        {!loading && filteredRuns.length === 0 && (
           <View style={styles.emptyState}>
             <Text style={styles.emptyText}>Žádné nadcházející běhy</Text>
           </View>
         )}
 
-        {!loading && runs.map((run, i) => (
+        {!loading && filteredRuns.map((run, i) => (
           <TouchableOpacity
             key={run.id}
-            style={[styles.runCard, i < runs.length - 1 && styles.runCardBorder]}
+            style={[styles.runCard, i < filteredRuns.length - 1 && styles.runCardBorder]}
             onPress={() => openRun(run)}
             activeOpacity={0.7}
           >
@@ -329,8 +420,13 @@ export default function MapaScreen() {
       </Animated.View>
 
       {/* Run detail modal */}
-      <Modal visible={selectedRun !== null} transparent animationType="fade" onRequestClose={() => setSelectedRun(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedRun(null)}>
+      <Modal
+        visible={selectedRun !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeModal}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={closeModal}>
           <Pressable style={styles.modalSheet} onPress={() => {}}>
             {selectedRun && (
               <>
@@ -341,23 +437,43 @@ export default function MapaScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.modalTitle}>{selectedRun.label}</Text>
                     <Text style={styles.modalClub}>{selectedRun.clubName}</Text>
+                    {selectedRun.distKm !== null && (
+                      <Text style={styles.modalDist}>{formatDist(selectedRun.distKm)} od tebe</Text>
+                    )}
                   </View>
-                  <TouchableOpacity onPress={() => setSelectedRun(null)} style={styles.modalClose}>
+                  <TouchableOpacity onPress={closeModal} style={styles.modalClose}>
                     <Text style={styles.modalCloseText}>✕</Text>
                   </TouchableOpacity>
                 </View>
 
                 <View style={styles.modalStats}>
-                  <View style={styles.modalStat}>
-                    <Text style={styles.modalStatValue}>{selectedRun.people}</Text>
-                    <Text style={styles.modalStatLabel}>běžci</Text>
-                  </View>
-                  <View style={styles.modalStatDivider} />
+                  {(selectedRun.paceSec != null || selectedRun.routeKm != null) && (
+                    <>
+                      <View style={styles.modalStatSplit}>
+                        {selectedRun.paceSec != null && (
+                          <View style={styles.modalStatSplitItem}>
+                            <Zap size={11} color={COLORS.muted} style={{ marginRight: 4 }} />
+                            <Text style={styles.modalStatValueSm}>{formatPace(selectedRun.paceSec)}</Text>
+                          </View>
+                        )}
+                        {selectedRun.paceSec != null && selectedRun.routeKm != null && (
+                          <View style={styles.modalStatSplitDivider} />
+                        )}
+                        {selectedRun.routeKm != null && (
+                          <View style={styles.modalStatSplitItem}>
+                            <Route size={11} color={COLORS.muted} style={{ marginRight: 4 }} />
+                            <Text style={styles.modalStatValueSm}>{selectedRun.routeKm} km</Text>
+                          </View>
+                        )}
+                      </View>
+                      <View style={styles.modalStatDivider} />
+                    </>
+                  )}
                   <View style={styles.modalStat}>
                     <Text style={styles.modalStatValue}>
-                      {selectedRun.maxParticipants ? `/ ${selectedRun.maxParticipants}` : '∞'}
+                      {selectedRun.people}{selectedRun.maxParticipants ? ` / ${selectedRun.maxParticipants}` : ''}
                     </Text>
-                    <Text style={styles.modalStatLabel}>kapacita</Text>
+                    <Text style={styles.modalStatLabel}>účastníci</Text>
                   </View>
                   <View style={styles.modalStatDivider} />
                   <View style={styles.modalStat}>
@@ -368,38 +484,80 @@ export default function MapaScreen() {
                   </View>
                 </View>
 
-                <View style={styles.modalInfoRow}>
+                <TouchableOpacity
+                  style={styles.modalInfoRow}
+                  onPress={() => Linking.openURL(`calshow:${Math.floor(new Date(selectedRun.startsAt).getTime() / 1000)}`)}
+                >
                   <Text style={styles.modalInfoIcon}>🕐</Text>
-                  <Text style={styles.modalInfoText}>{selectedRun.dayLabel} · {selectedRun.time}</Text>
-                </View>
+                  <Text style={styles.modalInfoLinkText}>{selectedRun.dayLabel} · {selectedRun.time}<Text style={styles.modalInfoChevron}> ›</Text></Text>
+                </TouchableOpacity>
                 {selectedRun.address ? (
-                  <View style={styles.modalInfoRow}>
+                  <TouchableOpacity
+                    style={styles.modalInfoRow}
+                    onPress={() => Linking.openURL(
+                      `maps://?q=${encodeURIComponent(selectedRun.address)}&ll=${selectedRun.lat},${selectedRun.lng}`
+                    )}
+                  >
                     <Text style={styles.modalInfoIcon}>📍</Text>
-                    <Text style={styles.modalInfoText}>{selectedRun.address}</Text>
-                  </View>
+                    <Text style={styles.modalInfoLinkText}>{selectedRun.address}<Text style={styles.modalInfoChevron}> ›</Text></Text>
+                  </TouchableOpacity>
                 ) : null}
-                {selectedRun.distKm !== null && (
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalInfoIcon}>🗺️</Text>
-                    <Text style={styles.modalInfoText}>{formatDist(selectedRun.distKm)} od tebe</Text>
-                  </View>
-                )}
-                {selectedRun.routeKm != null && (
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalInfoIcon}>📏</Text>
-                    <Text style={styles.modalInfoText}>{selectedRun.routeKm} km</Text>
-                  </View>
-                )}
-                {selectedRun.paceSec != null && (
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalInfoIcon}>⏱️</Text>
-                    <Text style={styles.modalInfoText}>{formatPace(selectedRun.paceSec)} tempo</Text>
-                  </View>
+
+                {isParticipant ? (
+                  <TouchableOpacity
+                    style={[styles.modalJoinBtn, styles.modalLeaveBtn]}
+                    onPress={() => setConfirmLeaveVisible(true)}
+                    disabled={joinLoading}
+                  >
+                    {joinLoading
+                      ? <ActivityIndicator color={COLORS.muted} />
+                      : <Text style={styles.modalLeaveText}>Odhlásit se</Text>
+                    }
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.modalJoinBtn}
+                    onPress={handleJoin}
+                    disabled={joinLoading || !userId}
+                  >
+                    {joinLoading
+                      ? <ActivityIndicator color="#FFF" />
+                      : <Text style={styles.modalJoinText}>
+                          {userId ? 'Přidat se' : 'Přihlas se pro registraci'}
+                        </Text>
+                    }
+                  </TouchableOpacity>
                 )}
 
-                <TouchableOpacity style={styles.modalJoinBtn}>
-                  <Text style={styles.modalJoinText}>Přidat se</Text>
-                </TouchableOpacity>
+                {/* Confirm leave — overlay uvnitř modalu, ne vnorřený Modal */}
+                {confirmLeaveVisible && (
+                  <Pressable style={styles.confirmOverlay} onPress={() => setConfirmLeaveVisible(false)}>
+                    <Pressable style={styles.confirmBox} onPress={() => {}}>
+                      <Text style={styles.confirmTitle}>Odhlásit se z běhu?</Text>
+                      <Text style={styles.confirmBody}>
+                        Opravdu se chceš odhlásit z běhu „{selectedRun.label}“?
+                      </Text>
+                      <View style={styles.confirmButtons}>
+                        <TouchableOpacity
+                          style={styles.confirmCancel}
+                          onPress={() => setConfirmLeaveVisible(false)}
+                        >
+                          <Text style={styles.confirmCancelText}>Zůstat</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.confirmLeave}
+                          onPress={handleLeave}
+                          disabled={joinLoading}
+                        >
+                          {joinLoading
+                            ? <ActivityIndicator color="#FFF" />
+                            : <Text style={styles.confirmLeaveText}>Odhlásit se</Text>
+                          }
+                        </TouchableOpacity>
+                      </View>
+                    </Pressable>
+                  </Pressable>
+                )}
               </>
             )}
           </Pressable>
@@ -477,10 +635,40 @@ const styles = StyleSheet.create({
   modalStat: { flex: 1, alignItems: 'center' },
   modalStatValue: { fontSize: 18, fontWeight: '800', color: COLORS.text },
   modalStatLabel: { fontSize: 11, color: COLORS.muted, marginTop: 3 },
-  modalStatDivider: { width: 1, height: 32, backgroundColor: COLORS.border },
+  modalStatDivider: { width: 1, height: 40, backgroundColor: COLORS.border },
+  modalStatSplit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  modalStatSplitItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },
+  modalStatSplitDivider: { width: '70%', height: 1, backgroundColor: COLORS.border },
+  modalStatValueSm: { fontSize: 15, fontWeight: '800', color: COLORS.text },
+  modalDist: { fontSize: 11, color: COLORS.accent, marginTop: 2 },
   modalInfoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
   modalInfoIcon: { fontSize: 16 },
   modalInfoText: { fontSize: 14, color: COLORS.text, flex: 1, lineHeight: 20 },
+  modalInfoLinkText: { fontSize: 14, color: COLORS.text, flex: 1, lineHeight: 20, textDecorationLine: 'underline', textDecorationColor: COLORS.accent },
+  modalInfoChevron: { fontSize: 16, color: COLORS.accent },
   modalJoinBtn: { backgroundColor: COLORS.accent, borderRadius: 20, paddingVertical: 16, alignItems: 'center', marginTop: 8 },
+  modalLeaveBtn: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border },
   modalJoinText: { fontSize: 16, fontWeight: '700', color: '#FFF' },
+  modalLeaveText: { fontSize: 15, fontWeight: '600', color: COLORS.text },
+  confirmOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    justifyContent: 'flex-end',
+  },
+  confirmBox: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40,
+  },
+  confirmTitle: { fontSize: 18, fontWeight: '800', color: COLORS.text, marginBottom: 8, textAlign: 'center' },
+  confirmBody: { fontSize: 14, color: COLORS.muted, textAlign: 'center', lineHeight: 20, marginBottom: 24 },
+  confirmButtons: { flexDirection: 'row', gap: 12 },
+  confirmCancel: {
+    flex: 1, borderRadius: 20, paddingVertical: 14, alignItems: 'center',
+    backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border,
+  },
+  confirmCancelText: { fontSize: 15, fontWeight: '600', color: COLORS.text },
+  confirmLeave: { flex: 1, borderRadius: 20, paddingVertical: 14, alignItems: 'center', backgroundColor: '#E05252' },
+  confirmLeaveText: { fontSize: 15, fontWeight: '700', color: '#FFF' },
 })

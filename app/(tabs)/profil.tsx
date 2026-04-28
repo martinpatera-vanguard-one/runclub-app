@@ -1,18 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { User, Bell, Lock, LogOut, ChevronRight } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
 import { supabase } from '../../lib/supabase'
+import { useEventParticipation } from '../../contexts/eventParticipation'
 
 const DAYS = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne']
 const TODAY = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1
-const RUN_DAYS = [0, 2, 4]
-
-const UPCOMING = [
-  { name: 'Letná Loop', when: 'Dnes 18:30', accent: true },
-  { name: 'Weekend long run', when: 'So 8:00', accent: false },
-]
 
 const SETTINGS = [
   { icon: User, label: 'Upravit profil', danger: false },
@@ -26,14 +21,49 @@ type Profile = {
   email: string
 }
 
+type UpcomingRun = {
+  id: string
+  name: string
+  when: string
+  isToday: boolean
+  startsAt: string
+}
+
+function formatUpcomingWhen(startsAt: string): { label: string; isToday: boolean } {
+  const date = new Date(startsAt)
+  const today = new Date()
+  const tomorrow = new Date(today)
+  tomorrow.setDate(today.getDate() + 1)
+  const time = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+
+  if (date.toDateString() === today.toDateString()) return { label: `Dnes ${time}`, isToday: true }
+  if (date.toDateString() === tomorrow.toDateString()) return { label: `Zítra ${time}`, isToday: false }
+
+  const weekday = date.toLocaleDateString('cs-CZ', { weekday: 'short' })
+  const capitalized = weekday.charAt(0).toUpperCase() + weekday.slice(1)
+  return { label: `${capitalized} ${time}`, isToday: false }
+}
+
 export default function ProfilScreen() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
+  const { myEvents, loaded: eventsLoaded } = useEventParticipation()
+
+  const upcomingRuns = useMemo<UpcomingRun[]>(() => {
+    const now = new Date()
+    return myEvents
+      .filter((e) => new Date(e.starts_at) >= now)
+      .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
+      .map((e) => {
+        const { label, isToday } = formatUpcomingWhen(e.starts_at)
+        return { id: e.id, name: e.name, when: label, isToday, startsAt: e.starts_at }
+      })
+  }, [myEvents])
 
   useEffect(() => {
     async function fetchProfile() {
       const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
+      if (!user) { setLoading(false); return }
 
       const { data } = await supabase
         .from('users')
@@ -97,16 +127,26 @@ export default function ProfilScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Moje nadcházející běhy</Text>
           <View style={styles.card}>
-            {UPCOMING.map((run, i) => (
-              <View
-                key={run.name}
-                style={[styles.upcomingRow, i < UPCOMING.length - 1 && styles.rowBorder]}
-              >
-                <View style={[styles.upcomingDot, !run.accent && { backgroundColor: COLORS.muted }]} />
-                <Text style={styles.upcomingName}>{run.name}</Text>
-                <Text style={styles.upcomingWhen}>{run.when}</Text>
+            {!eventsLoaded ? (
+              <View style={styles.upcomingRow}>
+                <ActivityIndicator size="small" color={COLORS.accent} />
               </View>
-            ))}
+            ) : upcomingRuns.length === 0 ? (
+              <View style={styles.upcomingRow}>
+                <Text style={styles.upcomingEmpty}>Žádné nadcházející běhy</Text>
+              </View>
+            ) : (
+              upcomingRuns.map((run, i) => (
+                <View
+                  key={run.id}
+                  style={[styles.upcomingRow, i < upcomingRuns.length - 1 && styles.rowBorder]}
+                >
+                  <View style={[styles.upcomingDot, !run.isToday && { backgroundColor: COLORS.muted }]} />
+                  <Text style={styles.upcomingName}>{run.name}</Text>
+                  <Text style={styles.upcomingWhen}>{run.when}</Text>
+                </View>
+              ))
+            )}
           </View>
         </View>
 
@@ -117,7 +157,11 @@ export default function ProfilScreen() {
             <View style={styles.calendarRow}>
               {DAYS.map((day, i) => {
                 const isToday = i === TODAY
-                const hasRun = RUN_DAYS.includes(i)
+                const hasRun = upcomingRuns.some((run) => {
+                  const d = new Date(run.startsAt)
+                  const dow = d.getDay() === 0 ? 6 : d.getDay() - 1
+                  return dow === i
+                })
                 return (
                   <View key={day} style={styles.calendarDay}>
                     <Text style={[styles.calendarDayLabel, isToday && styles.calendarDayLabelActive]}>
@@ -270,6 +314,10 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   upcomingWhen: {
+    fontSize: 13,
+    color: COLORS.muted,
+  },
+  upcomingEmpty: {
     fontSize: 13,
     color: COLORS.muted,
   },
