@@ -16,8 +16,18 @@ import * as Location from 'expo-location'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 import { useEventParticipation } from '../../contexts/eventParticipation'
+import { useClubRuns } from '../../contexts/clubRuns'
 
 const EVENT_FILTERS = ['Všechny', 'Dnes', 'Blízko']
+
+const RUN_TYPE_LABELS: Record<string, string> = {
+  longrun: 'Dlouhý běh',
+  tempo: 'Tempo',
+  interval: 'Interval',
+  sprint: 'Sprint',
+  recovery: 'Regenerační',
+  fartlek: 'Fartlek',
+}
 
 const AVATAR_COLORS = [
   { bg: COLORS.accentSoft, text: COLORS.accent },
@@ -38,6 +48,23 @@ type DbEvent = {
   event_participants: { id: string }[]
 }
 
+type DbClubRunExplore = {
+  id: string
+  title: string
+  run_type: string
+  lat: number
+  lng: number
+  address: string | null
+  starts_at: string
+  distance_km: number | null
+  pace_text: string | null
+  clubs: { name: string } | null
+}
+
+type UnifiedRun =
+  | { source: 'event'; data: DbEvent }
+  | { source: 'club_run'; data: DbClubRunExplore }
+
 type DbClub = {
   id: string
   name: string
@@ -51,6 +78,21 @@ function formatPace(secPerKm: number | null): string | null {
   const min = Math.floor(secPerKm / 60)
   const sec = secPerKm % 60
   return `${min}:${sec.toString().padStart(2, '0')} /km`
+}
+
+function getRunStats(item: UnifiedRun): string | null {
+  if (item.source === 'event') {
+    const parts = [
+      item.data.distance_km != null ? `${item.data.distance_km} km` : null,
+      formatPace(item.data.pace_sec_km),
+    ].filter(Boolean)
+    return parts.length ? parts.join(' · ') : null
+  }
+  const parts = [
+    item.data.distance_km != null ? `${item.data.distance_km} km` : null,
+    item.data.pace_text ? `${item.data.pace_text} /km` : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : null
 }
 
 function getDayLabel(startsAt: string) {
@@ -82,6 +124,7 @@ export default function NajitScreen() {
   const [activeFilter, setActiveFilter] = useState('Všechny')
   const [searchText, setSearchText] = useState('')
   const [events, setEvents] = useState<DbEvent[]>([])
+  const [clubRuns, setClubRuns] = useState<DbClubRunExplore[]>([])
   const [clubs, setClubs] = useState<DbClub[]>([])
   const [loading, setLoading] = useState(true)
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
@@ -89,6 +132,7 @@ export default function NajitScreen() {
   const [myClubIds, setMyClubIds] = useState<Set<string>>(new Set())
   const [joiningId, setJoiningId] = useState<string | null>(null)
   const { myEventIds, join: joinCtx, leave: leaveCtx, pendingOpenId } = useEventParticipation()
+  const { version: clubRunsVersion } = useClubRuns()
 
   function openOnMap(eventId: string) {
     pendingOpenId.current = eventId
@@ -97,7 +141,7 @@ export default function NajitScreen() {
 
   useEffect(() => {
     fetchData()
-  }, [])
+  }, [clubRunsVersion])
 
   // Refresh členství při každém přepnutí na tento tab
   useFocusEffect(
@@ -131,11 +175,18 @@ export default function NajitScreen() {
     const uid = user?.id ?? null
     if (uid) setUserId(uid)
 
-    const [eventsRes, clubsRes, memberRes] = await Promise.all([
+    const now = new Date().toISOString()
+
+    const [eventsRes, clubRunsRes, clubsRes, memberRes] = await Promise.all([
       supabase
         .from('events')
         .select('id, name, lat, lng, address, starts_at, distance_km, pace_sec_km, clubs(name), event_participants(id)')
-        .gte('starts_at', new Date().toISOString())
+        .gte('starts_at', now)
+        .order('starts_at', { ascending: true }),
+      supabase
+        .from('club_runs')
+        .select('id, title, run_type, lat, lng, address, starts_at, distance_km, pace_text, clubs(name)')
+        .gte('starts_at', now)
         .order('starts_at', { ascending: true }),
       supabase
         .from('clubs')
@@ -147,6 +198,7 @@ export default function NajitScreen() {
     ])
 
     if (!eventsRes.error) setEvents(eventsRes.data as unknown as DbEvent[])
+    if (!clubRunsRes.error) setClubRuns(clubRunsRes.data as unknown as DbClubRunExplore[])
     if (!clubsRes.error) setClubs(clubsRes.data as unknown as DbClub[])
     if (memberRes.data) {
       setMyClubIds(new Set(memberRes.data.map((r: { club_id: string }) => r.club_id)))
@@ -207,33 +259,50 @@ export default function NajitScreen() {
     setJoiningId(null)
   }
 
-  const filteredEvents = useCallback(() => {
-    let list = events
+  const filteredRuns = useCallback((): UnifiedRun[] => {
+    const allEvents: UnifiedRun[] = events.map((e) => ({ source: 'event', data: e }))
+    const allClubRuns: UnifiedRun[] = clubRuns.map((r) => ({ source: 'club_run', data: r }))
+    let list: UnifiedRun[] = [...allEvents, ...allClubRuns].sort(
+      (a, b) =>
+        new Date(a.data.starts_at).getTime() - new Date(b.data.starts_at).getTime(),
+    )
+
     if (searchText.trim()) {
       const q = searchText.toLowerCase()
-      list = list.filter(
-        (e) =>
-          e.name.toLowerCase().includes(q) ||
-          (e.clubs?.name ?? '').toLowerCase().includes(q) ||
-          (e.address ?? '').toLowerCase().includes(q),
-      )
+      list = list.filter((item) => {
+        if (item.source === 'event') {
+          return (
+            item.data.name.toLowerCase().includes(q) ||
+            (item.data.clubs?.name ?? '').toLowerCase().includes(q) ||
+            (item.data.address ?? '').toLowerCase().includes(q)
+          )
+        }
+        return (
+          item.data.title.toLowerCase().includes(q) ||
+          (item.data.clubs?.name ?? '').toLowerCase().includes(q) ||
+          (item.data.address ?? '').toLowerCase().includes(q)
+        )
+      })
     }
+
     if (activeFilter === 'Dnes') {
       const today = new Date().toDateString()
-      list = list.filter((e) => new Date(e.starts_at).toDateString() === today)
+      list = list.filter((item) => new Date(item.data.starts_at).toDateString() === today)
     }
+
     if (activeFilter === 'Blízko' && userLocation) {
       list = list
-        .filter((e) => e.lat != null && e.lng != null)
+        .filter((item) => item.data.lat != null && item.data.lng != null)
         .sort((a, b) => {
-          const dA = haversineKm(userLocation.lat, userLocation.lng, a.lat!, a.lng!)
-          const dB = haversineKm(userLocation.lat, userLocation.lng, b.lat!, b.lng!)
+          const dA = haversineKm(userLocation.lat, userLocation.lng, a.data.lat!, a.data.lng!)
+          const dB = haversineKm(userLocation.lat, userLocation.lng, b.data.lat!, b.data.lng!)
           return dA - dB
         })
         .slice(0, 10)
     }
+
     return list
-  }, [events, searchText, activeFilter, userLocation])
+  }, [events, clubRuns, searchText, activeFilter, userLocation])
 
   const filteredClubs = useCallback(() => {
     if (!searchText.trim()) return clubs
@@ -241,7 +310,7 @@ export default function NajitScreen() {
     return clubs.filter((c) => c.name.toLowerCase().includes(q))
   }, [clubs, searchText])
 
-  const visibleEvents = filteredEvents()
+  const visibleRuns = filteredRuns()
   const visibleClubs = filteredClubs()
 
   return (
@@ -308,77 +377,96 @@ export default function NajitScreen() {
           {/* BĚHY TAB */}
           {innerTab === 'behy' && (
             <>
-              {visibleEvents.length === 0 ? (
+              {visibleRuns.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.emptyText}>Žádné běhy nenalezeny</Text>
                 </View>
               ) : (
                 <View style={{ paddingTop: 8 }}>
-                  {visibleEvents.map((event) => {
-                    const attendees = event.event_participants ?? []
+                  {visibleRuns.map((item) => {
+                    const runId = item.source === 'event' ? item.data.id : `cr_${item.data.id}`
+                    const name = item.source === 'event' ? item.data.name : item.data.title
+                    const clubName = item.data.clubs?.name ?? 'Neznámý klub'
+                    const stats = getRunStats(item)
+                    const attendees = item.source === 'event' ? (item.data.event_participants ?? []) : []
                     const extra = Math.max(0, attendees.length - 3)
                     const shown = attendees.slice(0, 3)
+                    const isClubRun = item.source === 'club_run'
+
                     return (
                       <TouchableOpacity
-                        key={event.id}
+                        key={runId}
                         style={styles.eventCard}
                         activeOpacity={0.75}
-                        onPress={() => openOnMap(event.id)}
+                        onPress={() => openOnMap(runId)}
                       >
                         <View style={styles.eventCardTop}>
-                          <Text style={styles.eventTag}>{event.clubs?.name ?? 'Neznámý klub'}</Text>
-                          <Text style={styles.eventName}>{event.name}</Text>
-                          <Text style={styles.eventMeta}>
-                            {getDayLabel(event.starts_at)} · {getTimeLabel(event.starts_at)}
-                            {event.address ? ` · ${event.address}` : ''}
-                          </Text>
-                          {(event.distance_km != null || event.pace_sec_km != null) && (
-                            <Text style={styles.eventRunStats}>
-                              {[
-                                event.distance_km != null ? `${event.distance_km} km` : null,
-                                formatPace(event.pace_sec_km),
-                              ].filter(Boolean).join(' · ')}
-                            </Text>
-                          )}
-                        </View>
-                        <View style={styles.eventCardBottom}>
-                          <View style={styles.avatars}>
-                            {shown.map((_, i) => (
-                              <View
-                                key={i}
-                                style={[
-                                  styles.avatar,
-                                  { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
-                                ]}
-                              >
-                                <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
-                                  {i + 1}
+                          <View style={styles.eventTagRow}>
+                            <Text style={styles.eventTag}>{clubName}</Text>
+                            {isClubRun && (
+                              <View style={styles.runTypeBadge}>
+                                <Text style={styles.runTypeBadgeText}>
+                                  {RUN_TYPE_LABELS[item.data.run_type] ?? item.data.run_type}
                                 </Text>
                               </View>
-                            ))}
-                            {extra > 0 && (
-                              <View style={[styles.avatar, styles.avatarExtra]}>
-                                <Text style={styles.avatarExtraText}>+{extra}</Text>
-                              </View>
-                            )}
-                            {attendees.length === 0 && (
-                              <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
                             )}
                           </View>
-                          {myEventIds.has(event.id) ? (
+                          <Text style={styles.eventName}>{name}</Text>
+                          <Text style={styles.eventMeta}>
+                            {getDayLabel(item.data.starts_at)} · {getTimeLabel(item.data.starts_at)}
+                            {item.data.address ? ` · ${item.data.address}` : ''}
+                          </Text>
+                          {stats && <Text style={styles.eventRunStats}>{stats}</Text>}
+                        </View>
+                        <View style={styles.eventCardBottom}>
+                          {isClubRun ? (
+                            <Text style={styles.noAttendeesText}>Klubový běh</Text>
+                          ) : (
+                            <View style={styles.avatars}>
+                              {shown.map((_, i) => (
+                                <View
+                                  key={i}
+                                  style={[
+                                    styles.avatar,
+                                    { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
+                                  ]}
+                                >
+                                  <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
+                                    {i + 1}
+                                  </Text>
+                                </View>
+                              ))}
+                              {extra > 0 && (
+                                <View style={[styles.avatar, styles.avatarExtra]}>
+                                  <Text style={styles.avatarExtraText}>+{extra}</Text>
+                                </View>
+                              )}
+                              {attendees.length === 0 && (
+                                <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
+                              )}
+                            </View>
+                          )}
+                          {isClubRun ? (
                             <TouchableOpacity
                               style={styles.joinBtnRegistered}
-                              onPress={() => openOnMap(event.id)}
+                              onPress={() => openOnMap(runId)}
+                            >
+                              <Text style={styles.joinBtnRegisteredText}>Zobrazit na mapě →</Text>
+                            </TouchableOpacity>
+                          ) : myEventIds.has(item.data.id) ? (
+                            <TouchableOpacity
+                              style={styles.joinBtnRegistered}
+                              onPress={() => openOnMap(item.data.id)}
                             >
                               <Text style={styles.joinBtnRegisteredText}>Přihlášen ✓</Text>
                             </TouchableOpacity>
                           ) : (
                             <TouchableOpacity
-                              style={[styles.joinBtn, joiningId === event.id && { opacity: 0.6 }]}
-                              onPress={() => joinEventAndNavigate(event)}
-                              disabled={joiningId === event.id}
+                              style={[styles.joinBtn, joiningId === item.data.id && { opacity: 0.6 }]}
+                              onPress={() => joinEventAndNavigate(item.data as DbEvent)}
+                              disabled={joiningId === item.data.id}
                             >
-                              {joiningId === event.id
+                              {joiningId === item.data.id
                                 ? <ActivityIndicator size="small" color="#FFF" />
                                 : <Text style={styles.joinBtnText}>Přidat se</Text>
                               }
@@ -572,13 +660,29 @@ const styles = StyleSheet.create({
     padding: 14,
     paddingBottom: 10,
   },
+  eventTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
   eventTag: {
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.8,
     textTransform: 'uppercase',
     color: COLORS.accent,
-    marginBottom: 4,
+  },
+  runTypeBadge: {
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  runTypeBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.accent,
   },
   eventName: {
     fontSize: 16,

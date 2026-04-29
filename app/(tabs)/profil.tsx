@@ -1,10 +1,11 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { User, Bell, Lock, LogOut, ChevronRight } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
 import { supabase } from '../../lib/supabase'
 import { useEventParticipation } from '../../contexts/eventParticipation'
+import { useFocusEffect } from 'expo-router'
 
 const DAYS = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne']
 const TODAY = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1
@@ -48,17 +49,48 @@ export default function ProfilScreen() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
   const { myEvents, loaded: eventsLoaded } = useEventParticipation()
+  const [myClubRunEvents, setMyClubRunEvents] = useState<{ id: string; name: string; starts_at: string }[]>([])
+
+  useFocusEffect(
+    useCallback(() => {
+      async function fetchMyClubRuns() {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
+        const { data } = await supabase
+          .from('club_run_participants')
+          .select('club_runs(id, title, starts_at)')
+          .eq('user_id', user.id)
+        if (data) {
+          setMyClubRunEvents(
+            (data as any[])
+              .map((r) => r.club_runs)
+              .filter(Boolean)
+              .map((r: { id: string; title: string; starts_at: string }) => ({
+                id: `cr_${r.id}`,
+                name: r.title,
+                starts_at: r.starts_at,
+              }))
+          )
+        }
+      }
+      fetchMyClubRuns()
+    }, [])
+  )
 
   const upcomingRuns = useMemo<UpcomingRun[]>(() => {
     const now = new Date()
-    return myEvents
+    const fromEvents = myEvents
       .filter((e) => new Date(e.starts_at) >= now)
+      .map((e) => ({ id: e.id, name: e.name, starts_at: e.starts_at }))
+    const fromClubRuns = myClubRunEvents.filter((r) => new Date(r.starts_at) >= now)
+
+    return [...fromEvents, ...fromClubRuns]
       .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
       .map((e) => {
         const { label, isToday } = formatUpcomingWhen(e.starts_at)
         return { id: e.id, name: e.name, when: label, isToday, startsAt: e.starts_at }
       })
-  }, [myEvents])
+  }, [myEvents, myClubRunEvents])
 
   useEffect(() => {
     async function fetchProfile() {

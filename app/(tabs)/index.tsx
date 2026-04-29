@@ -19,6 +19,7 @@ import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 import { Zap, Route } from 'lucide-react-native'
 import { useEventParticipation } from '../../contexts/eventParticipation'
+import { useClubRuns } from '../../contexts/clubRuns'
 
 const FOCUSED_DELTA = 0.012
 const FILTERS = ['Dnes', 'Zítra', 'Tento týden']
@@ -86,6 +87,22 @@ type Run = {
   distKm: number | null
   routeKm: number | null
   paceSec: number | null
+  runType: string | null
+  source: 'event' | 'club_run'
+}
+
+type DbClubRun = {
+  id: string
+  title: string
+  run_type: string
+  distance_km: number | null
+  pace_text: string | null
+  starts_at: string
+  lat: number
+  lng: number
+  address: string | null
+  clubs: { name: string } | null
+  club_run_participants: { id: string }[]
 }
 
 function formatPace(secPerKm: number | null): string | null {
@@ -114,6 +131,39 @@ function mapEventToRun(event: DbEvent, userLocation: { lat: number; lng: number 
       : null,
     routeKm: event.distance_km,
     paceSec: event.pace_sec_km,
+    runType: null,
+    source: 'event',
+  }
+}
+
+function parsePaceTextToSec(paceText: string | null): number | null {
+  if (!paceText) return null
+  const match = paceText.match(/^(\d+):(\d{2})$/)
+  if (!match) return null
+  return parseInt(match[1]) * 60 + parseInt(match[2])
+}
+
+function mapClubRunToRun(run: DbClubRun, userLocation: { lat: number; lng: number } | null): Run {
+  return {
+    id: `cr_${run.id}`,
+    label: run.title,
+    clubName: run.clubs?.name ?? '',
+    lat: run.lat,
+    lng: run.lng,
+    address: run.address ?? '',
+    time: getTimeLabel(run.starts_at),
+    dayLabel: getDayLabel(run.starts_at),
+    startsAt: run.starts_at,
+    people: run.club_run_participants?.length ?? 0,
+    maxParticipants: null,
+    priceCzk: 0,
+    distKm: userLocation
+      ? haversineKm(userLocation.lat, userLocation.lng, run.lat, run.lng)
+      : null,
+    routeKm: run.distance_km,
+    paceSec: parsePaceTextToSec(run.pace_text),
+    runType: run.run_type,
+    source: 'club_run',
   }
 }
 
@@ -125,6 +175,7 @@ const EXPANDED = 260
 
 export default function MapaScreen() {
   const { myEventIds, join: joinCtx, leave: leaveCtx, pendingOpenId } = useEventParticipation()
+  const { version: clubRunsVersion } = useClubRuns()
   const [activeFilter, setActiveFilter] = useState('Dnes')
   const [containerH, setContainerH] = useState(0)
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
@@ -134,9 +185,15 @@ export default function MapaScreen() {
   const [userId, setUserId] = useState<string | null>(null)
   const [joinLoading, setJoinLoading] = useState(false)
   const [confirmLeaveVisible, setConfirmLeaveVisible] = useState(false)
+  const [myClubRunIds, setMyClubRunIds] = useState<Set<string>>(new Set())
   const insets = useSafeAreaInsets()
   const mapRef = useRef<MapView>(null)
-  const isParticipant = !!selectedRun && myEventIds.has(selectedRun.id)
+
+  const isParticipant = !!selectedRun && (
+    selectedRun.source === 'event'
+      ? myEventIds.has(selectedRun.id)
+      : myClubRunIds.has(selectedRun.id.slice(3))
+  )
 
   useEffect(() => {
     ;(async () => {
@@ -157,8 +214,19 @@ export default function MapaScreen() {
   }, [])
 
   useEffect(() => {
+    if (!userId) { setMyClubRunIds(new Set()); return }
+    supabase
+      .from('club_run_participants')
+      .select('club_run_id')
+      .eq('user_id', userId)
+      .then(({ data }) => {
+        setMyClubRunIds(new Set((data ?? []).map((r: { club_run_id: string }) => r.club_run_id)))
+      })
+  }, [userId])
+
+  useEffect(() => {
     fetchEvents()
-  }, [userLocation])
+  }, [userLocation, clubRunsVersion])
 
   useFocusEffect(
     useCallback(() => {
@@ -184,39 +252,68 @@ export default function MapaScreen() {
 
   async function fetchEvents() {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('events')
-      .select(`
-        id, name, description, lat, lng, address, starts_at,
-        max_participants, price_czk, distance_km, pace_sec_km,
-        clubs(name),
-        event_participants(id)
-      `)
-      .gte('starts_at', new Date().toISOString())
-      .order('starts_at', { ascending: true })
+    const now = new Date().toISOString()
 
-    if (error) {
-      console.error('[events] fetch error:', error.message)
-      setLoading(false)
-      return
+    const [eventsResult, clubRunsResult] = await Promise.all([
+      supabase
+        .from('events')
+        .select(`
+          id, name, description, lat, lng, address, starts_at,
+          max_participants, price_czk, distance_km, pace_sec_km,
+          clubs(name),
+          event_participants(id)
+        `)
+        .gte('starts_at', now)
+        .order('starts_at', { ascending: true }),
+      supabase
+        .from('club_runs')
+        .select('id, title, run_type, distance_km, pace_text, starts_at, lat, lng, address, clubs(name), club_run_participants(id)')
+        .gte('starts_at', now)
+        .order('starts_at', { ascending: true }),
+    ])
+
+    if (eventsResult.error) {
+      console.error('[events] fetch error:', eventsResult.error.message)
     }
 
-    const mapped = (data as unknown as DbEvent[]).map((e) => mapEventToRun(e, userLocation))
-    setRuns(mapped)
+    const mappedEvents = ((eventsResult.data ?? []) as unknown as DbEvent[]).map((e) =>
+      mapEventToRun(e, userLocation),
+    )
+    const mappedClubRuns = ((clubRunsResult.data ?? []) as unknown as DbClubRun[]).map((r) =>
+      mapClubRunToRun(r, userLocation),
+    )
+
+    const combined = [...mappedEvents, ...mappedClubRuns].sort(
+      (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
+    )
+    setRuns(combined)
     setLoading(false)
   }
 
   async function handleJoin() {
     if (!userId || !selectedRun) return
     setJoinLoading(true)
-    const { error } = await supabase
-      .from('event_participants')
-      .insert({ event_id: selectedRun.id, user_id: userId })
-    if (!error) {
-      joinCtx({ id: selectedRun.id, name: selectedRun.label, starts_at: selectedRun.startsAt })
-      const updated = { ...selectedRun, people: selectedRun.people + 1 }
-      setSelectedRun(updated)
-      setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+    if (selectedRun.source === 'club_run') {
+      const rawId = selectedRun.id.slice(3)
+      const { error } = await supabase
+        .from('club_run_participants')
+        .insert({ club_run_id: rawId, user_id: userId })
+      if (!error) {
+        setMyClubRunIds(prev => new Set([...prev, rawId]))
+        const updated = { ...selectedRun, people: selectedRun.people + 1 }
+        setSelectedRun(updated)
+        setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+      }
+    } else {
+      const { error } = await supabase
+        .from('event_participants')
+        .insert({ event_id: selectedRun.id, user_id: userId })
+      if (!error) {
+        joinCtx({ id: selectedRun.id, name: selectedRun.label, starts_at: selectedRun.startsAt })
+        const updated = { ...selectedRun, people: selectedRun.people + 1 }
+        setSelectedRun(updated)
+        setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+      }
     }
     setJoinLoading(false)
   }
@@ -224,16 +321,31 @@ export default function MapaScreen() {
   async function handleLeave() {
     if (!userId || !selectedRun) return
     setJoinLoading(true)
-    const { error } = await supabase
-      .from('event_participants')
-      .delete()
-      .eq('event_id', selectedRun.id)
-      .eq('user_id', userId)
-    if (!error) {
-      leaveCtx(selectedRun.id)
-      const updated = { ...selectedRun, people: Math.max(0, selectedRun.people - 1) }
-      setSelectedRun(updated)
-      setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+    if (selectedRun.source === 'club_run') {
+      const rawId = selectedRun.id.slice(3)
+      const { error } = await supabase
+        .from('club_run_participants')
+        .delete()
+        .eq('club_run_id', rawId)
+        .eq('user_id', userId)
+      if (!error) {
+        setMyClubRunIds(prev => { const s = new Set(prev); s.delete(rawId); return s })
+        const updated = { ...selectedRun, people: Math.max(0, selectedRun.people - 1) }
+        setSelectedRun(updated)
+        setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+      }
+    } else {
+      const { error } = await supabase
+        .from('event_participants')
+        .delete()
+        .eq('event_id', selectedRun.id)
+        .eq('user_id', userId)
+      if (!error) {
+        leaveCtx(selectedRun.id)
+        const updated = { ...selectedRun, people: Math.max(0, selectedRun.people - 1) }
+        setSelectedRun(updated)
+        setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+      }
     }
     setConfirmLeaveVisible(false)
     setJoinLoading(false)
@@ -435,10 +547,27 @@ export default function MapaScreen() {
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalEmoji}>🏃</Text>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.modalTitle}>{selectedRun.label}</Text>
-                    <Text style={styles.modalClub}>{selectedRun.clubName}</Text>
-                    {selectedRun.distKm !== null && (
-                      <Text style={styles.modalDist}>{formatDist(selectedRun.distKm)} od tebe</Text>
+                    <View style={styles.modalTitleRow}>
+                      <Text style={[styles.modalTitle, { flex: 1 }]}>{selectedRun.label}</Text>
+                      {selectedRun.distKm !== null && (
+                        <Text style={styles.modalDist}>{formatDist(selectedRun.distKm)} od tebe</Text>
+                      )}
+                    </View>
+                    <Text style={styles.modalClub}>
+                      <Text style={styles.modalClubLabel}>Klub: </Text>
+                      {selectedRun.clubName || '—'}
+                    </Text>
+                    {selectedRun.runType && (
+                      <Text style={styles.modalRunType}>
+                        <Text style={styles.modalClubLabel}>Typ běhu: </Text>
+                        {selectedRun.runType === 'longrun' ? 'Dlouhý běh'
+                          : selectedRun.runType === 'tempo' ? 'Tempo'
+                          : selectedRun.runType === 'interval' ? 'Interval'
+                          : selectedRun.runType === 'sprint' ? 'Sprint'
+                          : selectedRun.runType === 'recovery' ? 'Regenerační'
+                          : selectedRun.runType === 'fartlek' ? 'Fartlek'
+                          : selectedRun.runType}
+                      </Text>
                     )}
                   </View>
                   <TouchableOpacity onPress={closeModal} style={styles.modalClose}>
@@ -447,16 +576,18 @@ export default function MapaScreen() {
                 </View>
 
                 <View style={styles.modalStats}>
-                  {(selectedRun.paceSec != null || selectedRun.routeKm != null) && (
+                  {(selectedRun.paceSec != null || selectedRun.routeKm != null || selectedRun.source === 'club_run') && (
                     <>
                       <View style={styles.modalStatSplit}>
-                        {selectedRun.paceSec != null && (
-                          <View style={styles.modalStatSplitItem}>
-                            <Zap size={11} color={COLORS.muted} style={{ marginRight: 4 }} />
+                        <View style={styles.modalStatSplitItem}>
+                          <Zap size={11} color={COLORS.muted} style={{ marginRight: 4 }} />
+                          {selectedRun.paceSec != null ? (
                             <Text style={styles.modalStatValueSm}>{formatPace(selectedRun.paceSec)}</Text>
-                          </View>
-                        )}
-                        {selectedRun.paceSec != null && selectedRun.routeKm != null && (
+                          ) : selectedRun.source === 'club_run' ? (
+                            <Text style={styles.modalStatValueSmMuted}>Libovolné</Text>
+                          ) : null}
+                        </View>
+                        {(selectedRun.paceSec != null || selectedRun.source === 'club_run') && selectedRun.routeKm != null && (
                           <View style={styles.modalStatSplitDivider} />
                         )}
                         {selectedRun.routeKm != null && (
@@ -523,7 +654,7 @@ export default function MapaScreen() {
                     {joinLoading
                       ? <ActivityIndicator color="#FFF" />
                       : <Text style={styles.modalJoinText}>
-                          {userId ? 'Přidat se' : 'Přihlas se pro registraci'}
+                          {userId ? 'Přihlásit se' : 'Přihlas se pro registraci'}
                         </Text>
                     }
                   </TouchableOpacity>
@@ -627,8 +758,10 @@ const styles = StyleSheet.create({
   modalHandle: { width: 36, height: 4, backgroundColor: COLORS.border, borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 },
   modalEmoji: { fontSize: 32 },
+  modalTitleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
   modalTitle: { fontSize: 20, fontWeight: '800', color: COLORS.text },
-  modalClub: { fontSize: 13, color: COLORS.muted, marginTop: 2 },
+  modalClub: { fontSize: 13, color: COLORS.text, marginTop: 2, fontWeight: '500' },
+  modalClubLabel: { fontWeight: '400', color: COLORS.muted },
   modalClose: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' },
   modalCloseText: { fontSize: 13, color: COLORS.muted, fontWeight: '600' },
   modalStats: { flexDirection: 'row', backgroundColor: COLORS.bg, borderRadius: 20, padding: 16, marginBottom: 20, alignItems: 'center' },
@@ -640,7 +773,9 @@ const styles = StyleSheet.create({
   modalStatSplitItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },
   modalStatSplitDivider: { width: '70%', height: 1, backgroundColor: COLORS.border },
   modalStatValueSm: { fontSize: 15, fontWeight: '800', color: COLORS.text },
+  modalStatValueSmMuted: { fontSize: 13, fontWeight: '400', color: COLORS.muted, fontStyle: 'italic' },
   modalDist: { fontSize: 11, color: COLORS.accent, marginTop: 2 },
+  modalRunType: { fontSize: 12, fontWeight: '700', color: COLORS.accent, marginTop: 2 },
   modalInfoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
   modalInfoIcon: { fontSize: 16 },
   modalInfoText: { fontSize: 14, color: COLORS.text, flex: 1, lineHeight: 20 },

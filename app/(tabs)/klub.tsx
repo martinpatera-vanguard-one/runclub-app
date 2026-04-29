@@ -16,17 +16,84 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useFocusEffect, useRouter } from 'expo-router'
-import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut } from 'lucide-react-native'
+import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut, MapPin } from 'lucide-react-native'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
+import { useEventParticipation } from '../../contexts/eventParticipation'
+import { useClubRuns } from '../../contexts/clubRuns'
+import { CreateRunModal } from '../../components/CreateRunModal'
+
+const RUN_TYPE_LABELS: Record<string, string> = {
+  longrun: 'Dlouhý běh',
+  tempo: 'Tempo',
+  interval: 'Interval',
+  sprint: 'Sprint',
+  recovery: 'Regenerační',
+  fartlek: 'Fartlek',
+}
+
+type ClubRun = {
+  id: string
+  title: string
+  run_type: string
+  starts_at: string
+  distance_km: number | null
+  pace_text: string | null
+}
+
+function formatUpcomingWhen(startsAt: string): { label: string; isToday: boolean } {
+  const date = new Date(startsAt)
+  const today = new Date()
+  const tomorrow = new Date(today)
+  tomorrow.setDate(today.getDate() + 1)
+  const time = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+  if (date.toDateString() === today.toDateString()) return { label: `Dnes ${time}`, isToday: true }
+  if (date.toDateString() === tomorrow.toDateString()) return { label: `Zítra ${time}`, isToday: false }
+  const weekday = date.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
+  return { label: `${weekday} ${time}`, isToday: false }
+}
 
 const SCREEN_HEIGHT = Dimensions.get('window').height
+
+const LOCATIONS = [
+  'Praha – Letná / Holešovice',
+  'Praha – Vinohrady / Žižkov',
+  'Praha – Smíchov / Košíře',
+  'Praha – Dejvice / Bubeneč',
+  'Praha – Nusle / Michle',
+  'Praha – Vršovice / Strašnice',
+  'Praha – Karlín / Florenc',
+  'Praha – Nové Město / centrum',
+  'Praha – Staré Město / centrum',
+  'Praha – Braník / Podolí',
+  'Praha – Modřany / Libuš',
+  'Praha – Chodov / Háje',
+  'Praha – Prosek / Letňany',
+  'Praha – Kobylisy / Ďáblice',
+  'Praha – Řepy / Zličín',
+  'Praha – Radotín / Lochkov',
+  'Brno – centrum',
+  'Brno – Královo Pole',
+  'Brno – Žabovřesky',
+  'Brno – Líšeň',
+  'Ostrava – centrum',
+  'Ostrava – Poruba',
+  'Plzeň',
+  'Liberec',
+  'Olomouc',
+  'České Budějovice',
+  'Hradec Králové',
+  'Pardubice',
+  'Jiné',
+]
 
 type Club = {
   id: string
   name: string
   description: string | null
+  location: string | null
   memberCount: number
+  userRole: 'admin' | 'member'
 }
 
 export default function KlubScreen() {
@@ -38,7 +105,10 @@ export default function KlubScreen() {
   const [createOpen, setCreateOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
+  const [newLocation, setNewLocation] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [showCreateRun, setShowCreateRun] = useState(false)
+  const { refresh: refreshRuns } = useClubRuns()
   const router = useRouter()
 
   useFocusEffect(
@@ -54,7 +124,7 @@ export default function KlubScreen() {
 
     const { data: memberships, error: memError } = await supabase
       .from('club_members')
-      .select('club_id')
+      .select('club_id, role')
       .eq('user_id', user.id)
 
     if (memError || !memberships || memberships.length === 0) {
@@ -64,11 +134,15 @@ export default function KlubScreen() {
       return
     }
 
-    const clubIds = memberships.map((m: { club_id: string }) => m.club_id)
+    const clubIds = memberships.map((m: { club_id: string; role: string }) => m.club_id)
+    const roleMap: Record<string, 'admin' | 'member'> = {}
+    memberships.forEach((m: { club_id: string; role: string }) => {
+      roleMap[m.club_id] = m.role === 'admin' ? 'admin' : 'member'
+    })
 
     const { data: clubData, error: clubError } = await supabase
       .from('clubs')
-      .select('id, name, description')
+      .select('id, name, description, location')
       .in('id', clubIds)
 
     if (clubError || !clubData) { setLoading(false); return }
@@ -83,11 +157,13 @@ export default function KlubScreen() {
       countMap[r.club_id] = (countMap[r.club_id] ?? 0) + 1
     })
 
-    const mapped: Club[] = clubData.map((c: { id: string; name: string; description: string | null }) => ({
+    const mapped: Club[] = clubData.map((c: { id: string; name: string; description: string | null; location: string | null }) => ({
       id: c.id,
       name: c.name,
       description: c.description ?? null,
+      location: c.location ?? null,
       memberCount: countMap[c.id] ?? 0,
+      userRole: roleMap[c.id] ?? 'member',
     }))
 
     setClubs(mapped)
@@ -96,7 +172,7 @@ export default function KlubScreen() {
   }
 
   async function createClub() {
-    if (!newName.trim()) return
+    if (!newName.trim() || !newLocation) return
     setCreating(true)
 
     const { data: { user } } = await supabase.auth.getUser()
@@ -108,7 +184,7 @@ export default function KlubScreen() {
 
     const { data: club, error: clubError } = await supabase
       .from('clubs')
-      .insert({ name: newName.trim(), description: newDesc.trim() || null })
+      .insert({ name: newName.trim(), description: newDesc.trim() || null, location: newLocation })
       .select('id, name')
       .single()
 
@@ -128,11 +204,12 @@ export default function KlubScreen() {
       return
     }
 
-    const newClub: Club = { id: club.id, name: club.name, description: newDesc.trim() || null, memberCount: 1 }
+    const newClub: Club = { id: club.id, name: club.name, description: newDesc.trim() || null, location: newLocation, memberCount: 1, userRole: 'admin' }
     setClubs((prev) => [...prev, newClub])
     setSelectedClub(newClub)
     setNewName('')
     setNewDesc('')
+    setNewLocation(null)
     setCreateOpen(false)
     setCreating(false)
   }
@@ -140,6 +217,7 @@ export default function KlubScreen() {
   function openCreate() {
     setNewName('')
     setNewDesc('')
+    setNewLocation(null)
     setCreateOpen(true)
   }
 
@@ -172,9 +250,11 @@ export default function KlubScreen() {
           visible={createOpen}
           name={newName}
           desc={newDesc}
+          location={newLocation}
           creating={creating}
           onChangeName={setNewName}
           onChangeDesc={setNewDesc}
+          onChangeLocation={setNewLocation}
           onClose={() => setCreateOpen(false)}
           onSubmit={createClub}
         />
@@ -182,14 +262,20 @@ export default function KlubScreen() {
         <ClubDetailSheet
           club={detailClub}
           onClose={() => setDetailClub(null)}
-          onLeave={async (clubId) => {
+          onLeave={async (clubId, isAdmin) => {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
-            await supabase.from('club_members').delete().eq('club_id', clubId).eq('user_id', user.id)
+            if (isAdmin) {
+              await supabase.from('club_members').delete().eq('club_id', clubId)
+              await supabase.from('clubs').delete().eq('id', clubId)
+            } else {
+              await supabase.from('club_members').delete().eq('club_id', clubId).eq('user_id', user.id)
+            }
             setClubs((prev) => prev.filter((c) => c.id !== clubId))
             setDetailClub(null)
           }}
         />
+
       </View>
     )
   }
@@ -201,9 +287,17 @@ export default function KlubScreen() {
           <View style={styles.headerDecor} />
           <View style={styles.headerTop}>
             <Text style={styles.headerSubtitle}>Tvůj klub</Text>
-            <TouchableOpacity style={styles.headerCreateBtn} onPress={openCreate}>
-              <Plus size={16} color="#FFF" strokeWidth={2.5} />
-            </TouchableOpacity>
+            <View style={styles.headerButtons}>
+              {selectedClub?.userRole === 'admin' && (
+                <TouchableOpacity style={styles.headerRunBtn} onPress={() => setShowCreateRun(true)}>
+                  <Plus size={14} color="#FFF" strokeWidth={2.5} />
+                  <Text style={styles.headerRunBtnText}>Vytvořit běh</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={styles.headerCreateBtn} onPress={openCreate}>
+                <Plus size={16} color="#FFF" strokeWidth={2.5} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           {clubs.length === 1 ? (
@@ -288,9 +382,11 @@ export default function KlubScreen() {
         visible={createOpen}
         name={newName}
         desc={newDesc}
+        location={newLocation}
         creating={creating}
         onChangeName={setNewName}
         onChangeDesc={setNewDesc}
+        onChangeLocation={setNewLocation}
         onClose={() => setCreateOpen(false)}
         onSubmit={createClub}
       />
@@ -299,21 +395,37 @@ export default function KlubScreen() {
       <ClubDetailSheet
         club={detailClub}
         onClose={() => setDetailClub(null)}
-        onLeave={async (clubId) => {
+        onLeave={async (clubId, isAdmin) => {
           const { data: { user } } = await supabase.auth.getUser()
           if (!user) return
-          const { error } = await supabase
-            .from('club_members')
-            .delete()
-            .eq('club_id', clubId)
-            .eq('user_id', user.id)
-          if (error) { Alert.alert('Chyba', error.message); return }
+          if (isAdmin) {
+            const { error } = await supabase.from('club_members').delete().eq('club_id', clubId)
+            if (error) { Alert.alert('Chyba', error.message); return }
+            const { error: delErr } = await supabase.from('clubs').delete().eq('id', clubId)
+            if (delErr) { Alert.alert('Chyba', delErr.message); return }
+          } else {
+            const { error } = await supabase.from('club_members').delete().eq('club_id', clubId).eq('user_id', user.id)
+            if (error) { Alert.alert('Chyba', error.message); return }
+          }
           const remaining = clubs.filter((c) => c.id !== clubId)
           setClubs(remaining)
           setSelectedClub(remaining[0] ?? null)
           setDetailClub(null)
         }}
       />
+
+      {selectedClub && (
+        <CreateRunModal
+          visible={showCreateRun}
+          adminClubs={[{ id: selectedClub.id, name: selectedClub.name }]}
+          onClose={() => setShowCreateRun(false)}
+          onCreated={() => {
+            setShowCreateRun(false)
+            refreshRuns()
+          }}
+        />
+      )}
+
     </View>
   )
 }
@@ -321,13 +433,25 @@ export default function KlubScreen() {
 type ClubDetailSheetProps = {
   club: Club | null
   onClose: () => void
-  onLeave: (clubId: string) => Promise<void>
+  onLeave: (clubId: string, isAdmin: boolean) => Promise<void>
 }
 
 function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current
   const [menuOpen, setMenuOpen] = useState(false)
   const [leaving, setLeaving] = useState(false)
+  const [upcomingRuns, setUpcomingRuns] = useState<ClubRun[]>([])
+  const [runsLoading, setRunsLoading] = useState(false)
+  const [showCreateRun, setShowCreateRun] = useState(false)
+  const { pendingOpenId } = useEventParticipation()
+  const { refresh: refreshRuns } = useClubRuns()
+  const router = useRouter()
+
+  function openRunOnMap(runId: string) {
+    pendingOpenId.current = `cr_${runId}`
+    onClose()
+    router.navigate('/(tabs)/' as any)
+  }
 
   useEffect(() => {
     if (club) {
@@ -337,8 +461,10 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
         damping: 20,
         stiffness: 200,
       }).start()
+      fetchUpcomingRuns(club.id)
     } else {
       setMenuOpen(false)
+      setUpcomingRuns([])
       Animated.timing(slideAnim, {
         toValue: SCREEN_HEIGHT,
         duration: 250,
@@ -347,20 +473,36 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
     }
   }, [club])
 
+  async function fetchUpcomingRuns(clubId: string) {
+    setRunsLoading(true)
+    const { data } = await supabase
+      .from('club_runs')
+      .select('id, title, run_type, starts_at, distance_km, pace_text')
+      .eq('club_id', clubId)
+      .gte('starts_at', new Date().toISOString())
+      .order('starts_at', { ascending: true })
+      .limit(10)
+    setUpcomingRuns((data as ClubRun[]) ?? [])
+    setRunsLoading(false)
+  }
+
   function confirmLeave() {
     if (!club) return
     setMenuOpen(false)
+    const isAdmin = club.userRole === 'admin'
     Alert.alert(
-      'Opustit klub',
-      `Opravdu chceš opustit klub „${club.name}"?`,
+      isAdmin ? 'Smazat klub' : 'Opustit klub',
+      isAdmin
+        ? `Jsi zakladatel klubu „${club.name}". Pokud ho opustíš, klub bude nenávratně smazán včetně všech členů. Opravdu chceš pokračovat?`
+        : `Opravdu chceš opustit klub „${club.name}"?`,
       [
         { text: 'Zrušit', style: 'cancel' },
         {
-          text: 'Opustit',
+          text: isAdmin ? 'Smazat klub' : 'Opustit',
           style: 'destructive',
           onPress: async () => {
             setLeaving(true)
-            await onLeave(club.id)
+            await onLeave(club.id, isAdmin)
             setLeaving(false)
           },
         },
@@ -400,7 +542,55 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
               <Users size={16} color={COLORS.accent} strokeWidth={2} />
               <Text style={styles.detailStatText}>{club.memberCount} členů</Text>
             </View>
+            {club.location && (
+              <View style={styles.detailStat}>
+                <MapPin size={16} color={COLORS.accent} strokeWidth={2} />
+                <Text style={styles.detailStatText}>{club.location}</Text>
+              </View>
+            )}
           </View>
+
+          {/* Nadcházející běhy */}
+          <Text style={styles.detailSectionTitle}>Nadcházející běhy</Text>
+          <View style={styles.runsCard}>
+            {runsLoading ? (
+              <View style={styles.runsRow}>
+                <ActivityIndicator size="small" color={COLORS.accent} />
+              </View>
+            ) : upcomingRuns.length === 0 ? (
+              <View style={styles.runsRow}>
+                <Text style={styles.runsEmpty}>Žádné nadcházející běhy</Text>
+              </View>
+            ) : (
+              upcomingRuns.map((run, i) => {
+                const { label, isToday } = formatUpcomingWhen(run.starts_at)
+                const stats = [
+                  run.distance_km != null ? `${run.distance_km} km` : null,
+                  run.pace_text ? `${run.pace_text} /km` : null,
+                ].filter(Boolean).join(' · ')
+                return (
+                  <TouchableOpacity
+                    key={run.id}
+                    style={[styles.runsRow, i < upcomingRuns.length - 1 && styles.runsRowBorder]}
+                    onPress={() => openRunOnMap(run.id)}
+                    activeOpacity={0.65}
+                  >
+                    <View style={[styles.runsDot, !isToday && { backgroundColor: COLORS.muted }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.runsName}>{run.title}</Text>
+                      {(RUN_TYPE_LABELS[run.run_type] || stats) ? (
+                        <Text style={styles.runsMeta}>
+                          {[RUN_TYPE_LABELS[run.run_type], stats].filter(Boolean).join(' · ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={styles.runsWhen}>{label} ›</Text>
+                  </TouchableOpacity>
+                )
+              })
+            )}
+          </View>
+          <View style={{ height: 8 }} />
         </ScrollView>
       </SafeAreaView>
 
@@ -420,6 +610,24 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {club.userRole === 'admin' && (
+        <TouchableOpacity style={styles.detailCreateRunBtn} onPress={() => setShowCreateRun(true)}>
+          <Plus size={14} color="#FFF" strokeWidth={2.5} />
+          <Text style={styles.detailCreateRunBtnText}>Vytvořit běh</Text>
+        </TouchableOpacity>
+      )}
+
+      <CreateRunModal
+        visible={showCreateRun}
+        adminClubs={[{ id: club.id, name: club.name }]}
+        onClose={() => setShowCreateRun(false)}
+        onCreated={() => {
+          setShowCreateRun(false)
+          refreshRuns()
+          fetchUpcomingRuns(club.id)
+        }}
+      />
     </Animated.View>
   )
 }
@@ -428,64 +636,115 @@ type CreateModalProps = {
   visible: boolean
   name: string
   desc: string
+  location: string | null
   creating: boolean
   onChangeName: (v: string) => void
   onChangeDesc: (v: string) => void
+  onChangeLocation: (v: string) => void
   onClose: () => void
   onSubmit: () => void
 }
 
-function CreateModal({ visible, name, desc, creating, onChangeName, onChangeDesc, onClose, onSubmit }: CreateModalProps) {
+function CreateModal({ visible, name, desc, location, creating, onChangeName, onChangeDesc, onChangeLocation, onClose, onSubmit }: CreateModalProps) {
+  const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current
+  const [showLocationList, setShowLocationList] = useState(false)
+  const canSubmit = name.trim() && location && !creating
+
+  useEffect(() => {
+    if (visible) {
+      setShowLocationList(false)
+      Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, damping: 20, stiffness: 200 }).start()
+    } else {
+      Animated.timing(slideAnim, { toValue: SCREEN_HEIGHT, duration: 250, useNativeDriver: true }).start()
+    }
+  }, [visible])
+
+  if (!visible) return null
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Animated.View style={[styles.createOverlay, { transform: [{ translateY: slideAnim }] }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
-          <TouchableOpacity activeOpacity={1} style={styles.createSheet}>
-            <View style={styles.createHeader}>
-              <Text style={styles.createTitle}>Nový klub</Text>
-              <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <X size={20} color={COLORS.muted} strokeWidth={2} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.inputLabel}>Název klubu *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="např. Vinohrady Runners"
-              placeholderTextColor={COLORS.muted}
-              value={name}
-              onChangeText={onChangeName}
-              autoFocus
-              returnKeyType="next"
-            />
-
-            <Text style={styles.inputLabel}>Popis (volitelné)</Text>
-            <TextInput
-              style={[styles.input, styles.inputMultiline]}
-              placeholder="Pár slov o vašem klubu…"
-              placeholderTextColor={COLORS.muted}
-              value={desc}
-              onChangeText={onChangeDesc}
-              multiline
-              numberOfLines={3}
-              returnKeyType="done"
-            />
-
-            <TouchableOpacity
-              style={[styles.submitBtn, (!name.trim() || creating) && styles.submitBtnDisabled]}
-              onPress={onSubmit}
-              disabled={!name.trim() || creating}
-            >
-              {creating ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <Text style={styles.submitBtnText}>Vytvořit klub</Text>
-              )}
+        <TouchableOpacity style={styles.createBackdrop} activeOpacity={1} onPress={onClose} />
+        <View style={styles.createSheet}>
+          <View style={styles.createHeader}>
+            <Text style={styles.createTitle}>Nový klub</Text>
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <X size={20} color={COLORS.muted} strokeWidth={2} />
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+
+          {showLocationList ? (
+            <>
+              <View style={styles.locationSheetHeader}>
+                <Text style={styles.locationSheetTitle}>Vyber lokalitu</Text>
+                <TouchableOpacity onPress={() => setShowLocationList(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <X size={20} color={COLORS.muted} strokeWidth={2} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: SCREEN_HEIGHT * 0.5 }}>
+                {LOCATIONS.map((loc) => (
+                  <TouchableOpacity
+                    key={loc}
+                    style={[styles.locationOption, location === loc && styles.locationOptionActive]}
+                    onPress={() => { onChangeLocation(loc); setShowLocationList(false) }}
+                  >
+                    <Text style={[styles.locationOptionText, location === loc && styles.locationOptionTextActive]}>
+                      {loc}
+                    </Text>
+                    {location === loc && <Check size={16} color={COLORS.accent} strokeWidth={2.5} />}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </>
+          ) : (
+            <>
+              <Text style={styles.inputLabel}>Název klubu *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="např. Vinohrady Runners"
+                placeholderTextColor={COLORS.muted}
+                value={name}
+                onChangeText={onChangeName}
+                returnKeyType="next"
+              />
+
+              <Text style={styles.inputLabel}>Město / čtvrť *</Text>
+              <TouchableOpacity style={styles.locationPicker} onPress={() => setShowLocationList(true)}>
+                <MapPin size={16} color={location ? COLORS.accent : COLORS.muted} strokeWidth={2} />
+                <Text style={[styles.locationPickerText, !location && styles.locationPickerPlaceholder]}>
+                  {location ?? 'Vyber lokalitu…'}
+                </Text>
+                <ChevronDown size={16} color={COLORS.muted} strokeWidth={2} />
+              </TouchableOpacity>
+
+              <Text style={styles.inputLabel}>Popis (volitelné)</Text>
+              <TextInput
+                style={[styles.input, styles.inputMultiline]}
+                placeholder="Pár slov o vašem klubu…"
+                placeholderTextColor={COLORS.muted}
+                value={desc}
+                onChangeText={onChangeDesc}
+                multiline
+                numberOfLines={3}
+                returnKeyType="done"
+              />
+
+              <TouchableOpacity
+                style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
+                onPress={onSubmit}
+                disabled={!canSubmit}
+              >
+                {creating ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.submitBtnText}>Vytvořit klub</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </KeyboardAvoidingView>
-    </Modal>
+    </Animated.View>
   )
 }
 
@@ -528,6 +787,25 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.7)',
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerRunBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  headerRunBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFF',
   },
   headerCreateBtn: {
     width: 28,
@@ -726,6 +1004,19 @@ const styles = StyleSheet.create({
   dropdownItemTextActive: {
     color: COLORS.accent,
   },
+  createOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
+    justifyContent: 'flex-end',
+  },
+  createBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
   createSheet: {
     backgroundColor: COLORS.surface,
     borderTopLeftRadius: 24,
@@ -777,6 +1068,60 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFF',
   },
+  locationPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.bg,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  locationPickerText: {
+    flex: 1,
+    fontSize: 15,
+    color: COLORS.text,
+  },
+  locationPickerPlaceholder: {
+    color: COLORS.muted,
+  },
+  locationSheet: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 40,
+  },
+  locationSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  locationSheetTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  locationOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 13,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+  },
+  locationOptionActive: {
+    backgroundColor: COLORS.accentSoft,
+  },
+  locationOptionText: {
+    fontSize: 15,
+    color: COLORS.text,
+  },
+  locationOptionTextActive: {
+    color: COLORS.accent,
+    fontWeight: '600',
+  },
   detailOverlay: {
     position: 'absolute',
     top: 0,
@@ -808,6 +1153,29 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  detailCreateRunBtn: {
+    position: 'absolute',
+    bottom: 32,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.accent,
+    borderRadius: 28,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 8,
+    zIndex: 5,
+  },
+  detailCreateRunBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFF',
   },
   menuSheet: {
     backgroundColor: COLORS.surface,
@@ -887,5 +1255,60 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: COLORS.text,
+  },
+  detailSectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.muted,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+    marginTop: 4,
+  },
+  runsCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  runsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 14,
+  },
+  runsRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  runsDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
+    flexShrink: 0,
+  },
+  runsName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  runsMeta: {
+    fontSize: 12,
+    color: COLORS.muted,
+    marginTop: 2,
+  },
+  runsWhen: {
+    fontSize: 12,
+    color: COLORS.muted,
+    flexShrink: 0,
+  },
+  runsEmpty: {
+    fontSize: 13,
+    color: COLORS.muted,
   },
 })
