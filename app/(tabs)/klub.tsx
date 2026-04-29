@@ -16,12 +16,32 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useFocusEffect, useRouter } from 'expo-router'
-import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut, MapPin } from 'lucide-react-native'
+// TODO: deep link — odkomentovat až bude slug sloupec v DB a doména
+// import { useLocalSearchParams } from 'expo-router'
+import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut, MapPin, Share2 } from 'lucide-react-native'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 import { useEventParticipation } from '../../contexts/eventParticipation'
 import { useClubRuns } from '../../contexts/clubRuns'
 import { CreateRunModal } from '../../components/CreateRunModal'
+import { ShareSheet } from '../../components/ShareSheet'
+import { shareStoryCard } from '../../lib/share'
+
+// TODO: deep link slug handling — aktivovat až bude slug v DB a doména
+// Použití:
+//   const { slug } = useLocalSearchParams<{ slug?: string }>()
+//   useEffect(() => {
+//     if (slug) openClubBySlug(slug)
+//   }, [slug])
+//
+// async function openClubBySlug(slug: string) {
+//   const { data } = await supabase
+//     .from('clubs')
+//     .select('id, name, description, location, member_count:club_members(count)')
+//     .eq('slug', slug)
+//     .single()
+//   if (data) setDetailClub(/* mapovat na Club typ */)
+// }
 
 const RUN_TYPE_LABELS: Record<string, string> = {
   longrun: 'Dlouhý běh',
@@ -90,6 +110,7 @@ const LOCATIONS = [
 type Club = {
   id: string
   name: string
+  slug: string | null
   description: string | null
   location: string | null
   memberCount: number
@@ -160,6 +181,7 @@ export default function KlubScreen() {
     const mapped: Club[] = clubData.map((c: { id: string; name: string; description: string | null; location: string | null }) => ({
       id: c.id,
       name: c.name,
+      slug: null,
       description: c.description ?? null,
       location: c.location ?? null,
       memberCount: countMap[c.id] ?? 0,
@@ -204,7 +226,7 @@ export default function KlubScreen() {
       return
     }
 
-    const newClub: Club = { id: club.id, name: club.name, description: newDesc.trim() || null, location: newLocation, memberCount: 1, userRole: 'admin' }
+    const newClub: Club = { id: club.id, name: club.name, slug: null, description: newDesc.trim() || null, location: newLocation, memberCount: 1, userRole: 'admin' }
     setClubs((prev) => [...prev, newClub])
     setSelectedClub(newClub)
     setNewName('')
@@ -443,6 +465,7 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
   const [upcomingRuns, setUpcomingRuns] = useState<ClubRun[]>([])
   const [runsLoading, setRunsLoading] = useState(false)
   const [showCreateRun, setShowCreateRun] = useState(false)
+  const [showShare, setShowShare] = useState(false)
   const { pendingOpenId } = useEventParticipation()
   const { refresh: refreshRuns } = useClubRuns()
   const router = useRouter()
@@ -519,9 +542,14 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
           <TouchableOpacity style={styles.detailMenuBtn} onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <MoreVertical size={20} color={COLORS.muted} strokeWidth={2} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.detailCloseBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <X size={20} color={COLORS.muted} strokeWidth={2} />
-          </TouchableOpacity>
+          <View style={styles.detailTopRight}>
+            <TouchableOpacity style={styles.detailCloseBtn} onPress={() => setShowShare(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Share2 size={20} color={COLORS.muted} strokeWidth={2} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.detailCloseBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <X size={20} color={COLORS.muted} strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
@@ -627,6 +655,14 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
           refreshRuns()
           fetchUpcomingRuns(club.id)
         }}
+      />
+
+      <ShareSheet
+        visible={showShare}
+        club={club}
+        onClose={() => setShowShare(false)}
+        // TODO: předat ref ClubStoryCard až bude react-native-view-shot nainstalován
+        onShareStory={() => { setShowShare(false); shareStoryCard(null) }}
       />
     </Animated.View>
   )
@@ -881,8 +917,8 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   clubIconWrapper: {
-    width: 44,
-    height: 44,
+    width: 46,
+    height: 46,
     borderRadius: 14,
     backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
@@ -1138,6 +1174,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
+  detailTopRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   detailMenuBtn: {
     width: 36,
     height: 36,
@@ -1241,7 +1282,7 @@ const styles = StyleSheet.create({
   detailStatsRow: {
     flexDirection: 'row',
     gap: 20,
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.surface,
     borderRadius: 16,
     padding: 14,
     marginBottom: 20,

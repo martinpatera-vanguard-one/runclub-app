@@ -7,16 +7,20 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  Animated,
+  Dimensions,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Search } from 'lucide-react-native'
-import { useState, useEffect, useCallback } from 'react'
+import { Search, X, Users, MapPin } from 'lucide-react-native'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useFocusEffect, router } from 'expo-router'
 import * as Location from 'expo-location'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 import { useEventParticipation } from '../../contexts/eventParticipation'
 import { useClubRuns } from '../../contexts/clubRuns'
+
+const SCREEN_HEIGHT = Dimensions.get('window').height
 
 const EVENT_FILTERS = ['Všechny', 'Dnes', 'Blízko']
 
@@ -69,6 +73,23 @@ type DbClub = {
   id: string
   name: string
   club_members: { id: string }[]
+}
+
+type ClubDetail = {
+  id: string
+  name: string
+  description: string | null
+  location: string | null
+  memberCount: number
+}
+
+type ClubRun = {
+  id: string
+  title: string
+  run_type: string
+  starts_at: string
+  distance_km: number | null
+  pace_text: string | null
 }
 
 type UserLocation = { lat: number; lng: number }
@@ -126,6 +147,7 @@ export default function NajitScreen() {
   const [events, setEvents] = useState<DbEvent[]>([])
   const [clubRuns, setClubRuns] = useState<DbClubRunExplore[]>([])
   const [clubs, setClubs] = useState<DbClub[]>([])
+  const [detailClub, setDetailClub] = useState<ClubDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
@@ -493,7 +515,18 @@ export default function NajitScreen() {
                   const isMember = myClubIds.has(club.id)
                   const isJoining = joiningId === club.id
                   return (
-                    <View key={club.id} style={styles.clubCard}>
+                    <TouchableOpacity
+                      key={club.id}
+                      style={styles.clubCard}
+                      activeOpacity={0.75}
+                      onPress={() => setDetailClub({
+                        id: club.id,
+                        name: club.name,
+                        description: null,
+                        location: null,
+                        memberCount: club.club_members?.length ?? 0,
+                      })}
+                    >
                       <View style={styles.clubCardLeft}>
                         <View style={styles.clubIconWrapper}>
                           <Text style={styles.clubIcon}>🏃</Text>
@@ -512,7 +545,7 @@ export default function NajitScreen() {
                       ) : (
                         <TouchableOpacity
                           style={[styles.joinClubBtn, isJoining && styles.joinClubBtnDisabled]}
-                          onPress={() => joinClub(club.id)}
+                          onPress={(e) => { e.stopPropagation?.(); joinClub(club.id) }}
                           disabled={isJoining}
                         >
                           <Text style={styles.joinClubBtnText}>
@@ -520,7 +553,7 @@ export default function NajitScreen() {
                           </Text>
                         </TouchableOpacity>
                       )}
-                    </View>
+                    </TouchableOpacity>
                   )
                 })
               )}
@@ -530,9 +563,341 @@ export default function NajitScreen() {
           <View style={{ height: 20 }} />
         </ScrollView>
       )}
+
+      <ExploreClubDetailSheet
+        club={detailClub}
+        isMember={detailClub ? myClubIds.has(detailClub.id) : false}
+        joiningId={joiningId}
+        onClose={() => setDetailClub(null)}
+        onJoin={(clubId) => {
+          joinClub(clubId)
+          setDetailClub(null)
+        }}
+      />
     </SafeAreaView>
   )
 }
+
+type ExploreClubDetailProps = {
+  club: ClubDetail | null
+  isMember: boolean
+  joiningId: string | null
+  onClose: () => void
+  onJoin: (clubId: string) => void
+}
+
+function ExploreClubDetailSheet({ club, isMember, joiningId, onClose, onJoin }: ExploreClubDetailProps) {
+  const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current
+  const [upcomingRuns, setUpcomingRuns] = useState<ClubRun[]>([])
+  const [runsLoading, setRunsLoading] = useState(false)
+  const [fullDetail, setFullDetail] = useState<{ description: string | null; location: string | null } | null>(null)
+  const { pendingOpenId } = useEventParticipation()
+
+  function openRunOnMap(runId: string) {
+    pendingOpenId.current = `cr_${runId}`
+    onClose()
+    router.navigate('/(tabs)/' as any)
+  }
+
+  function formatWhen(startsAt: string): string {
+    const date = new Date(startsAt)
+    const today = new Date()
+    const tomorrow = new Date(today)
+    tomorrow.setDate(today.getDate() + 1)
+    const time = date.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' })
+    if (date.toDateString() === today.toDateString()) return `Dnes ${time}`
+    if (date.toDateString() === tomorrow.toDateString()) return `Zítra ${time}`
+    const weekday = date.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
+    return `${weekday} ${time}`
+  }
+
+  useEffect(() => {
+    if (club) {
+      Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, damping: 20, stiffness: 200 }).start()
+      fetchClubDetail(club.id)
+      fetchUpcomingRuns(club.id)
+    } else {
+      setUpcomingRuns([])
+      setFullDetail(null)
+      Animated.timing(slideAnim, { toValue: SCREEN_HEIGHT, duration: 250, useNativeDriver: true }).start()
+    }
+  }, [club])
+
+  async function fetchClubDetail(clubId: string) {
+    const { data } = await supabase
+      .from('clubs')
+      .select('description, location')
+      .eq('id', clubId)
+      .single()
+    if (data) setFullDetail({ description: data.description ?? null, location: data.location ?? null })
+  }
+
+  async function fetchUpcomingRuns(clubId: string) {
+    setRunsLoading(true)
+    const { data } = await supabase
+      .from('club_runs')
+      .select('id, title, run_type, starts_at, distance_km, pace_text')
+      .eq('club_id', clubId)
+      .gte('starts_at', new Date().toISOString())
+      .order('starts_at', { ascending: true })
+      .limit(10)
+    setUpcomingRuns((data as ClubRun[]) ?? [])
+    setRunsLoading(false)
+  }
+
+  if (!club) return null
+
+  const description = fullDetail?.description ?? club.description
+  const location = fullDetail?.location ?? club.location
+  const isJoining = joiningId === club.id
+
+  return (
+    <Animated.View style={[exploreDetailStyles.overlay, { transform: [{ translateY: slideAnim }] }]}>
+      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        <View style={exploreDetailStyles.topBar}>
+          <View style={{ width: 36 }} />
+          <TouchableOpacity style={exploreDetailStyles.closeBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <X size={20} color={COLORS.muted} strokeWidth={2} />
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={exploreDetailStyles.content}>
+          <View style={exploreDetailStyles.iconWrapper}>
+            <Text style={exploreDetailStyles.icon}>🏃</Text>
+          </View>
+
+          <Text style={exploreDetailStyles.name}>{club.name}</Text>
+
+          {description ? (
+            <Text style={exploreDetailStyles.desc}>{description}</Text>
+          ) : (
+            <Text style={exploreDetailStyles.descEmpty}>Bez popisu</Text>
+          )}
+
+          <View style={exploreDetailStyles.statsRow}>
+            <View style={exploreDetailStyles.stat}>
+              <Users size={16} color={COLORS.accent} strokeWidth={2} />
+              <Text style={exploreDetailStyles.statText}>{club.memberCount} členů</Text>
+            </View>
+            {location && (
+              <View style={exploreDetailStyles.stat}>
+                <MapPin size={16} color={COLORS.accent} strokeWidth={2} />
+                <Text style={exploreDetailStyles.statText}>{location}</Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={exploreDetailStyles.sectionTitle}>Nadcházející běhy</Text>
+          <View style={exploreDetailStyles.runsCard}>
+            {runsLoading ? (
+              <View style={exploreDetailStyles.runsRow}>
+                <ActivityIndicator size="small" color={COLORS.accent} />
+              </View>
+            ) : upcomingRuns.length === 0 ? (
+              <View style={exploreDetailStyles.runsRow}>
+                <Text style={exploreDetailStyles.runsEmpty}>Žádné nadcházející běhy</Text>
+              </View>
+            ) : (
+              upcomingRuns.map((run, i) => {
+                const stats = [
+                  run.distance_km != null ? `${run.distance_km} km` : null,
+                  run.pace_text ? `${run.pace_text} /km` : null,
+                ].filter(Boolean).join(' · ')
+                return (
+                  <TouchableOpacity
+                    key={run.id}
+                    style={[exploreDetailStyles.runsRow, i < upcomingRuns.length - 1 && exploreDetailStyles.runsRowBorder]}
+                    onPress={() => openRunOnMap(run.id)}
+                    activeOpacity={0.65}
+                  >
+                    <View style={exploreDetailStyles.runsDot} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={exploreDetailStyles.runsName}>{run.title}</Text>
+                      {(RUN_TYPE_LABELS[run.run_type] || stats) ? (
+                        <Text style={exploreDetailStyles.runsMeta}>
+                          {[RUN_TYPE_LABELS[run.run_type], stats].filter(Boolean).join(' · ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={exploreDetailStyles.runsWhen}>{formatWhen(run.starts_at)} ›</Text>
+                  </TouchableOpacity>
+                )
+              })
+            )}
+          </View>
+          <View style={{ height: 80 }} />
+        </ScrollView>
+      </SafeAreaView>
+
+      {!isMember && (
+        <TouchableOpacity
+          style={[exploreDetailStyles.joinBtn, isJoining && { opacity: 0.6 }]}
+          onPress={() => onJoin(club.id)}
+          disabled={isJoining}
+        >
+          {isJoining
+            ? <ActivityIndicator size="small" color="#FFF" />
+            : <Text style={exploreDetailStyles.joinBtnText}>+ Přidat se</Text>
+          }
+        </TouchableOpacity>
+      )}
+    </Animated.View>
+  )
+}
+
+const exploreDetailStyles = StyleSheet.create({
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: COLORS.bg,
+    zIndex: 10,
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  closeBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  content: {
+    padding: 24,
+    paddingTop: 8,
+  },
+  iconWrapper: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    backgroundColor: COLORS.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  icon: {
+    fontSize: 36,
+  },
+  name: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  desc: {
+    fontSize: 14,
+    color: COLORS.muted,
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  descEmpty: {
+    fontSize: 14,
+    color: COLORS.border,
+    fontStyle: 'italic',
+    marginBottom: 20,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 20,
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 20,
+  },
+  stat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.muted,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+    marginTop: 4,
+  },
+  runsCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  runsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 14,
+  },
+  runsRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  runsDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
+    flexShrink: 0,
+  },
+  runsName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  runsMeta: {
+    fontSize: 12,
+    color: COLORS.muted,
+    marginTop: 2,
+  },
+  runsWhen: {
+    fontSize: 12,
+    color: COLORS.muted,
+    flexShrink: 0,
+  },
+  runsEmpty: {
+    fontSize: 13,
+    color: COLORS.muted,
+  },
+  joinBtn: {
+    position: 'absolute',
+    bottom: 32,
+    right: 16,
+    backgroundColor: COLORS.accent,
+    borderRadius: 28,
+    paddingHorizontal: 20,
+    paddingVertical: 13,
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 8,
+    zIndex: 5,
+  },
+  joinBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+})
 
 const styles = StyleSheet.create({
   container: {
