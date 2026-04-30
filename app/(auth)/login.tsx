@@ -121,7 +121,12 @@ export default function LoginScreen() {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Heslo</Text>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>Heslo</Text>
+                <TouchableOpacity onPress={() => router.push('/(auth)/forgot-password')}>
+                  <Text style={styles.forgotLink}>Zapomněl jsi heslo?</Text>
+                </TouchableOpacity>
+              </View>
               <TextInput
                 style={styles.input}
                 value={password}
@@ -231,6 +236,16 @@ const styles = StyleSheet.create({
   },
   inputGroup: {
     gap: 6,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  forgotLink: {
+    fontSize: 12,
+    color: COLORS.accent,
+    fontWeight: '600',
   },
   label: {
     fontSize: 13,

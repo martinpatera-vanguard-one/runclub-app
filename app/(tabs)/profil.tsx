@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Modal } from 'react-native'
+import { Image as ExpoImage } from 'expo-image'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { User, Bell, Lock, LogOut, ChevronRight, ChevronLeft, CalendarDays, X, Zap, Route } from 'lucide-react-native'
 import { COLORS } from '../../constants/theme'
@@ -46,6 +47,7 @@ const SETTINGS = [
 type Profile = {
   full_name: string
   email: string
+  avatar_url: string | null
 }
 
 type UpcomingRun = {
@@ -216,26 +218,29 @@ export default function ProfilScreen() {
       .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
   }, [myEvents, myClubRunEvents, eventDetails, selectedDay])
 
-  useEffect(() => {
-    async function fetchProfile() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) { setLoading(false); return }
+  useFocusEffect(
+    useCallback(() => {
+      async function fetchProfile() {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) { setLoading(false); return }
 
-      const { data } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('id', user.id)
-        .single()
+        const { data } = await supabase
+          .from('users')
+          .select('full_name, avatar_url')
+          .eq('id', user.id)
+          .single()
 
-      setProfile({
-        full_name: data?.full_name ?? user.user_metadata?.full_name ?? '',
-        email: user.email ?? '',
-      })
-      setLoading(false)
-    }
+        setProfile({
+          full_name: data?.full_name ?? user.user_metadata?.full_name ?? '',
+          email: user.email ?? '',
+          avatar_url: data?.avatar_url ?? null,
+        })
+        setLoading(false)
+      }
 
-    fetchProfile()
-  }, [])
+      fetchProfile()
+    }, [])
+  )
 
   const handleSignOut = () => {
     Alert.alert('Odhlásit se', 'Opravdu se chceš odhlásit?', [
@@ -259,6 +264,12 @@ export default function ProfilScreen() {
           <View style={styles.avatarBig}>
             {loading ? (
               <ActivityIndicator color={COLORS.accent} size="small" />
+            ) : profile?.avatar_url ? (
+              <ExpoImage
+                source={{ uri: profile.avatar_url }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+              />
             ) : (
               <Text style={styles.avatarLetter}>{avatarLetter}</Text>
             )}
@@ -315,6 +326,7 @@ export default function ProfilScreen() {
               onPress={
                 item.label === 'Odhlásit se' ? handleSignOut :
                 item.label === 'Můj kalendář' ? () => setShowCalendar(true) :
+                item.label === 'Upravit profil' ? () => router.push('/edit-profil') :
                 undefined
               }
               activeOpacity={0.7}
@@ -535,6 +547,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 12,
+    overflow: 'hidden',
   },
   avatarLetter: {
     fontSize: 30,

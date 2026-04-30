@@ -428,6 +428,20 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
 
   async function handleCreate() {
     if (!canSubmit) return
+    const trimmedTitle = title.trim()
+    if (trimmedTitle.length < 2) {
+      Alert.alert('Chyba', 'Název běhu musí mít alespoň 2 znaky.')
+      return
+    }
+    if (trimmedTitle.length > 80) {
+      Alert.alert('Chyba', 'Název běhu může mít nejvýše 80 znaků.')
+      return
+    }
+    const trimmedNote = note.trim()
+    if (trimmedNote.length > 500) {
+      Alert.alert('Chyba', 'Poznámka může mít nejvýše 500 znaků.')
+      return
+    }
     setCreating(true)
 
     const { data: { user } } = await supabase.auth.getUser()
@@ -513,6 +527,7 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
                 value={title}
                 onChangeText={setTitle}
                 returnKeyType="next"
+                maxLength={80}
               />
 
               <Text style={styles.label}>Typ běhu *</Text>
@@ -596,6 +611,7 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
                 multiline
                 numberOfLines={3}
                 returnKeyType="done"
+                maxLength={500}
               />
 
               <TouchableOpacity

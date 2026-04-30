@@ -54,13 +54,23 @@ serve(async (req: Request) => {
     return new Response('Klub nenalezen', { status: 404 })
   }
 
-  const title = club.name
+  function escapeHtml(text: string): string {
+    const map: Record<string, string> = {
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }
+    return text.replace(/[&<>"']/g, (char) => map[char])
+  }
+
+  const safeName = escapeHtml(club.name)
+  const safeLocation = club.location ? escapeHtml(club.location) : null
+  const title = safeName
   const description = club.description
-    ?? `Běžecký klub ${club.name}${club.location ? ` · ${club.location}` : ''}. Přidej se!`
+    ? escapeHtml(club.description)
+    : `Běžecký klub ${safeName}${safeLocation ? ` · ${safeLocation}` : ''}. Přidej se!`
   // %%PLACEHOLDER%% — až bude OG image endpoint, použít dynamický obrázek
   const ogImage = OG_IMAGE_FALLBACK
   const deepLink = `runclub://klub/${club.id}`
-  const webUrl = `${BASE_URL}/k/${slug}`
+  const webUrl = `${BASE_URL}/k/${escapeHtml(slug)}`
 
   // HTML stránka s OG meta tagy a auto-redirectem
   const html = `<!DOCTYPE html>

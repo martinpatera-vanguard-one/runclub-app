@@ -30,10 +30,11 @@ export default function RootLayout() {
     if (session === undefined) return  // ještě se načítá
 
     const inAuthGroup = segments[0] === '(auth)'
+    const onResetPassword = segments[1] === 'reset-password'
 
     if (!session && !inAuthGroup) {
       router.replace('/(auth)/login')
-    } else if (session && inAuthGroup) {
+    } else if (session && inAuthGroup && !onResetPassword) {
       router.replace('/(tabs)')
     }
   }, [session, segments])
@@ -42,6 +43,14 @@ export default function RootLayout() {
   // URL formát: runclub://auth/callback?code=... nebo #access_token=...
   useEffect(() => {
     const handleUrl = async ({ url }: { url: string }) => {
+      if (url.includes('type=recovery')) {
+        // Odkaz pro obnovu hesla — po výměně kódu přesměruj na reset-password
+        const { error } = await supabase.auth.exchangeCodeForSession(url)
+        if (!error) {
+          router.replace('/(auth)/reset-password')
+        }
+        return
+      }
       if (url.includes('code=') || url.includes('access_token')) {
         const { error } = await supabase.auth.exchangeCodeForSession(url)
         if (error) {

@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useFocusEffect, useRouter } from 'expo-router'
 // TODO: deep link — odkomentovat až bude slug sloupec v DB a doména
 // import { useLocalSearchParams } from 'expo-router'
-import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut, MapPin, Share2, Camera } from 'lucide-react-native'
+import { ChevronDown, ChevronRight, Check, Plus, X, Users, MoreVertical, LogOut, MapPin, Share2, Camera } from 'lucide-react-native'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 import { useEventParticipation } from '../../contexts/eventParticipation'
@@ -228,7 +228,21 @@ export default function KlubScreen() {
   }
 
   async function createClub() {
-    if (!newName.trim() || !newLocation) return
+    const trimmedName = newName.trim()
+    const trimmedDesc = newDesc.trim()
+    if (!trimmedName || !newLocation) return
+    if (trimmedName.length < 2) {
+      Alert.alert('Chyba', 'Název klubu musí mít alespoň 2 znaky.')
+      return
+    }
+    if (trimmedName.length > 60) {
+      Alert.alert('Chyba', 'Název klubu může mít nejvýše 60 znaků.')
+      return
+    }
+    if (trimmedDesc.length > 300) {
+      Alert.alert('Chyba', 'Popis může mít nejvýše 300 znaků.')
+      return
+    }
     setCreating(true)
 
     const { data: { user } } = await supabase.auth.getUser()
@@ -240,7 +254,7 @@ export default function KlubScreen() {
 
     const { data: club, error: clubError } = await supabase
       .from('clubs')
-      .insert({ name: newName.trim(), description: newDesc.trim() || null, location: newLocation })
+      .insert({ name: trimmedName, description: trimmedDesc || null, location: newLocation })
       .select('id, name')
       .single()
 
@@ -406,8 +420,16 @@ export default function KlubScreen() {
               onPress={() => setDetailClub(club)}
             >
               <View style={styles.clubCardLeft}>
-                <View style={styles.clubIconWrapper}>
-                  <Text style={styles.clubIcon}>🏃</Text>
+                <View style={[styles.clubIconWrapper, !!club.cover_image_url && { backgroundColor: 'transparent' }]}>
+                  {club.cover_image_url ? (
+                    <ExpoImage
+                      source={{ uri: club.cover_image_url }}
+                      style={{ width: 46, height: 46, borderRadius: 14 }}
+                      contentFit="cover"
+                    />
+                  ) : (
+                    <Text style={styles.clubIcon}>🏃</Text>
+                  )}
                 </View>
                 <View>
                   <Text style={[styles.clubCardName, club.id === selectedClub.id && styles.clubCardNameActive]}>
@@ -529,6 +551,9 @@ function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSh
   const [showCreateRun, setShowCreateRun] = useState(false)
   const [showShare, setShowShare] = useState(false)
   const [uploadingCover, setUploadingCover] = useState(false)
+  const [showMembers, setShowMembers] = useState(false)
+  const [members, setMembers] = useState<{ id: string; full_name: string; avatar_url: string | null }[]>([])
+  const [membersLoading, setMembersLoading] = useState(false)
   const { pendingOpenId } = useEventParticipation()
   const { refresh: refreshRuns } = useClubRuns()
   const router = useRouter()
@@ -572,6 +597,22 @@ function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSh
     setRunsLoading(false)
   }
 
+  async function fetchMembers(clubId: string) {
+    setMembersLoading(true)
+    const { data } = await supabase
+      .from('club_members')
+      .select('user_id, users(id, full_name, avatar_url)')
+      .eq('club_id', clubId)
+    setMembers(
+      (data ?? []).map((row: any) => ({
+        id: row.users?.id ?? row.user_id,
+        full_name: row.users?.full_name ?? 'Neznámý člen',
+        avatar_url: row.users?.avatar_url ?? null,
+      }))
+    )
+    setMembersLoading(false)
+  }
+
   function confirmLeave() {
     if (!club) return
     setMenuOpen(false)
@@ -611,17 +652,11 @@ function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSh
 
   async function doUpload(source: 'camera' | 'library') {
     if (!club) return
-    console.log('[cover] doUpload start, clubId:', club.id, 'source:', source)
     setUploadingCover(true)
     try {
       const url = await pickAndUploadClubCover(club.id, source)
-      console.log('[cover] doUpload got url:', url)
-      if (url) {
-        console.log('[cover] calling onCoverUpdate')
-        onCoverUpdate(club.id, url)
-      }
+      if (url) onCoverUpdate(club.id, url)
     } catch (e: unknown) {
-      console.error('[cover] doUpload error:', e)
       const msg = e instanceof Error ? e.message : String(e)
       Alert.alert('Chyba nahrávání', msg)
     } finally {
@@ -643,8 +678,6 @@ function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSh
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
                 transition={300}
-                onLoad={() => console.log('[cover] ExpoImage loaded')}
-                onError={(e) => console.error('[cover] ExpoImage error:', e.error)}
               />
               <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.25)' }]} />
             </>
@@ -695,16 +728,26 @@ function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSh
             <Text style={styles.detailDescEmpty}>Bez popisu</Text>
           )}
 
-          <View style={styles.detailStatsRow}>
-            <View style={styles.detailStat}>
-              <Users size={16} color={COLORS.accent} strokeWidth={2} />
-              <Text style={styles.detailStatText}>{club.memberCount} členů</Text>
-            </View>
-            {club.location && (
-              <View style={styles.detailStat}>
-                <MapPin size={16} color={COLORS.accent} strokeWidth={2} />
-                <Text style={styles.detailStatText}>{club.location}</Text>
+          <View style={styles.detailStatsCol}>
+            <TouchableOpacity
+              style={[styles.detailStat, { justifyContent: 'space-between' }]}
+              onPress={() => { fetchMembers(club.id); setShowMembers(true) }}
+              activeOpacity={0.7}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Users size={16} color={COLORS.accent} strokeWidth={2} />
+                <Text style={styles.detailStatText}>{club.memberCount} členů</Text>
               </View>
+              <ChevronRight size={16} color={COLORS.muted} strokeWidth={2} />
+            </TouchableOpacity>
+            {club.location && (
+              <>
+                <View style={styles.detailStatDivider} />
+                <View style={styles.detailStat}>
+                  <MapPin size={16} color={COLORS.accent} strokeWidth={2} />
+                  <Text style={styles.detailStatText}>{club.location}</Text>
+                </View>
+              </>
             )}
           </View>
 
@@ -794,6 +837,40 @@ function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSh
         // TODO: předat ref ClubStoryCard až bude react-native-view-shot nainstalován
         onShareStory={() => { setShowShare(false); shareStoryCard(null) }}
       />
+
+      <Modal visible={showMembers} animationType="fade" transparent onRequestClose={() => setShowMembers(false)}>
+        <TouchableOpacity style={styles.membersOverlay} activeOpacity={1} onPress={() => setShowMembers(false)}>
+          <TouchableOpacity style={styles.membersSheet} activeOpacity={1} onPress={() => {}}>
+            <View style={styles.membersHeader}>
+              <Text style={styles.membersTitle}>Členové</Text>
+              <TouchableOpacity onPress={() => setShowMembers(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <X size={20} color={COLORS.muted} strokeWidth={2} />
+              </TouchableOpacity>
+            </View>
+            {membersLoading ? (
+              <ActivityIndicator color={COLORS.accent} style={{ marginVertical: 32 }} />
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 1080 }}>
+                {members.map((m, i) => {
+                  const initials = m.full_name.split(' ').map((p: string) => p.charAt(0)).join('').toUpperCase()
+                  return (
+                    <View key={m.id} style={[styles.memberRow, i < members.length - 1 && styles.memberRowBorder]}>
+                      <View style={styles.memberAvatar}>
+                        {m.avatar_url ? (
+                          <ExpoImage source={{ uri: m.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                        ) : (
+                          <Text style={styles.memberAvatarText}>{initials}</Text>
+                        )}
+                      </View>
+                      <Text style={styles.memberName}>{m.full_name}</Text>
+                    </View>
+                  )
+                })}
+              </ScrollView>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </Animated.View>
   )
 }
@@ -872,6 +949,7 @@ function CreateModal({ visible, name, desc, location, creating, onChangeName, on
                 value={name}
                 onChangeText={onChangeName}
                 returnKeyType="next"
+                maxLength={60}
               />
 
               <Text style={styles.inputLabel}>Město / čtvrť *</Text>
@@ -893,6 +971,7 @@ function CreateModal({ visible, name, desc, location, creating, onChangeName, on
                 multiline
                 numberOfLines={3}
                 returnKeyType="done"
+                maxLength={300}
               />
 
               <TouchableOpacity
@@ -1457,10 +1536,22 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 20,
   },
+  detailStatsCol: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    paddingVertical: 4,
+    marginBottom: 20,
+  },
   detailStat: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    padding: 14,
+  },
+  detailStatDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 14,
   },
   detailStatText: {
     fontSize: 14,
@@ -1521,5 +1612,65 @@ const styles = StyleSheet.create({
   runsEmpty: {
     fontSize: 13,
     color: COLORS.muted,
+  },
+  membersOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  membersSheet: {
+    width: '100%',
+    minHeight: 320,
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  membersHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  membersTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  memberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  memberRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  memberAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: COLORS.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  memberAvatarText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  memberName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.text,
+    flex: 1,
   },
 })

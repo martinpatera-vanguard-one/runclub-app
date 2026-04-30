@@ -11,11 +11,11 @@ function blobToBase64(blob: Blob): Promise<string> {
   })
 }
 
-export async function pickAndUploadClubCover(
-  clubId: string,
+export async function pickAndUploadAvatar(
+  userId: string,
   source: 'camera' | 'library' = 'library',
 ): Promise<string | null> {
-  const pickerOptions = { allowsEditing: true, aspect: [16, 9] as [number, number], quality: 1 as const }
+  const pickerOptions = { allowsEditing: true, aspect: [1, 1] as [number, number], quality: 1 as const }
 
   const result = source === 'camera'
     ? await ImagePicker.launchCameraAsync(pickerOptions)
@@ -30,8 +30,8 @@ export async function pickAndUploadClubCover(
 
   const manipResult = await ImageManipulator.manipulateAsync(
     asset.uri,
-    [{ resize: { width: 800 } }],
-    { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG },
+    [{ resize: { width: 200 } }],
+    { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG },
   )
 
   const response = await fetch(manipResult.uri)
@@ -39,9 +39,9 @@ export async function pickAndUploadClubCover(
   const base64 = await blobToBase64(blob)
 
   const { error } = await supabase
-    .from('clubs')
-    .update({ cover_image_url: base64 })
-    .eq('id', clubId)
+    .from('users')
+    .update({ avatar_url: base64 })
+    .eq('id', userId)
 
   if (error) throw new Error(`DB update failed: ${error.message}`)
 

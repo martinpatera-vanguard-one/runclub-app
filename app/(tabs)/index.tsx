@@ -3,6 +3,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  ScrollView,
   Animated,
   PanResponder,
   Modal,
@@ -10,6 +11,7 @@ import {
   ActivityIndicator,
   Linking,
 } from 'react-native'
+import { Image as ExpoImage } from 'expo-image'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps'
 import { useRef, useState, useEffect, useCallback } from 'react'
@@ -17,7 +19,7 @@ import * as Location from 'expo-location'
 import { useFocusEffect } from 'expo-router'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
-import { Zap, Route } from 'lucide-react-native'
+import { Zap, Route, X } from 'lucide-react-native'
 import { useEventParticipation } from '../../contexts/eventParticipation'
 import { useClubRuns } from '../../contexts/clubRuns'
 
@@ -190,6 +192,9 @@ export default function MapaScreen() {
   const [joinLoading, setJoinLoading] = useState(false)
   const [confirmLeaveVisible, setConfirmLeaveVisible] = useState(false)
   const [myClubRunIds, setMyClubRunIds] = useState<Set<string>>(new Set())
+  const [showParticipants, setShowParticipants] = useState(false)
+  const [participants, setParticipants] = useState<{ id: string; full_name: string; avatar_url: string | null }[]>([])
+  const [participantsLoading, setParticipantsLoading] = useState(false)
   const insets = useSafeAreaInsets()
   const mapRef = useRef<MapView>(null)
 
@@ -360,6 +365,39 @@ export default function MapaScreen() {
     setSelectedRun(null)
   }
 
+  async function fetchParticipants(run: Run) {
+    setParticipantsLoading(true)
+    const rawId = run.source === 'club_run' ? run.id.slice(3) : run.id
+    const table = run.source === 'event' ? 'event_participants' : 'club_run_participants'
+    const idCol = run.source === 'event' ? 'event_id' : 'club_run_id'
+
+    const { data: rows } = await supabase
+      .from(table)
+      .select('user_id')
+      .eq(idCol, rawId)
+
+    const userIds = (rows ?? []).map((r: any) => r.user_id)
+    if (userIds.length === 0) {
+      setParticipants([])
+      setParticipantsLoading(false)
+      return
+    }
+
+    const { data: users } = await supabase
+      .from('users')
+      .select('id, full_name, avatar_url')
+      .in('id', userIds)
+
+    setParticipants(
+      (users ?? []).map((u: any) => ({
+        id: u.id,
+        full_name: u.full_name ?? 'Neznámý účastník',
+        avatar_url: u.avatar_url ?? null,
+      }))
+    )
+    setParticipantsLoading(false)
+  }
+
   const openRun = (run: Run) => {
     setSelectedRun(run)
     if (run.lat && run.lng) {
@@ -383,7 +421,7 @@ export default function MapaScreen() {
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 4,
       onPanResponderGrant: () => {
         translateY.stopAnimation((val) => { lastY.current = val })
@@ -604,12 +642,16 @@ export default function MapaScreen() {
                       <View style={styles.modalStatDivider} />
                     </>
                   )}
-                  <View style={styles.modalStat}>
+                  <TouchableOpacity
+                    style={styles.modalStat}
+                    onPress={() => { fetchParticipants(selectedRun); setShowParticipants(true) }}
+                    activeOpacity={0.7}
+                  >
                     <Text style={styles.modalStatValue}>
                       {selectedRun.people}{selectedRun.maxParticipants ? ` / ${selectedRun.maxParticipants}` : ''}
                     </Text>
-                    <Text style={styles.modalStatLabel}>účastníci</Text>
-                  </View>
+                    <Text style={styles.modalStatLabel}>účastníci ›</Text>
+                  </TouchableOpacity>
                   <View style={styles.modalStatDivider} />
                   <View style={styles.modalStat}>
                     <Text style={styles.modalStatValue}>
@@ -671,6 +713,41 @@ export default function MapaScreen() {
                   </TouchableOpacity>
                 )}
 
+                {/* Participants overlay */}
+                {showParticipants && (
+                  <Pressable style={styles.participantsOverlay} onPress={() => setShowParticipants(false)}>
+                    <Pressable style={styles.participantsSheet} onPress={() => {}}>
+                      <View style={styles.participantsHeader}>
+                        <Text style={styles.participantsTitle}>Účastníci</Text>
+                        <TouchableOpacity onPress={() => setShowParticipants(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                          <X size={20} color={COLORS.muted} strokeWidth={2} />
+                        </TouchableOpacity>
+                      </View>
+                      {participantsLoading ? (
+                        <ActivityIndicator color={COLORS.accent} style={{ marginVertical: 32 }} />
+                      ) : (
+                        <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 1080 }}>
+                          {participants.map((p, i) => {
+                            const initials = p.full_name.split(' ').map((s: string) => s.charAt(0)).join('').toUpperCase()
+                            return (
+                              <View key={p.id} style={[styles.participantRow, i < participants.length - 1 && styles.participantRowBorder]}>
+                                <View style={styles.participantAvatar}>
+                                  {p.avatar_url ? (
+                                    <ExpoImage source={{ uri: p.avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                                  ) : (
+                                    <Text style={styles.participantAvatarText}>{initials}</Text>
+                                  )}
+                                </View>
+                                <Text style={styles.participantName}>{p.full_name}</Text>
+                              </View>
+                            )
+                          })}
+                        </ScrollView>
+                      )}
+                    </Pressable>
+                  </Pressable>
+                )}
+
                 {/* Confirm leave — overlay uvnitř modalu, ne vnorřený Modal */}
                 {confirmLeaveVisible && (
                   <Pressable style={styles.confirmOverlay} onPress={() => setConfirmLeaveVisible(false)}>
@@ -705,6 +782,7 @@ export default function MapaScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
     </View>
   )
 }
@@ -817,4 +895,67 @@ const styles = StyleSheet.create({
   confirmCancelText: { fontSize: 15, fontWeight: '600', color: COLORS.text },
   confirmLeave: { flex: 1, borderRadius: 20, paddingVertical: 14, alignItems: 'center', backgroundColor: '#E05252' },
   confirmLeaveText: { fontSize: 15, fontWeight: '700', color: '#FFF' },
+  participantsOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  participantsSheet: {
+    width: '100%',
+    minHeight: 320,
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  participantsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  participantsTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  participantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  participantRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  participantAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: COLORS.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  participantAvatarText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  participantName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.text,
+    flex: 1,
+  },
 })
