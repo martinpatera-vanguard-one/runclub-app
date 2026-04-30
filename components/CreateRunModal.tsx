@@ -325,6 +325,7 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
   const [lat, setLat] = useState<number | null>(null)
   const [lng, setLng] = useState<number | null>(null)
   const [address, setAddress] = useState('')
+  const [note, setNote] = useState('')
   const [creating, setCreating] = useState(false)
 
   const [mapVisible, setMapVisible] = useState(false)
@@ -355,6 +356,7 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
       setLat(null)
       setLng(null)
       setAddress('')
+      setNote('')
       setSelectedClubId(adminClubs.length === 1 ? adminClubs[0].id : '')
 
       Animated.spring(slideAnim, {
@@ -450,6 +452,7 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
       lat,
       lng,
       address: address || null,
+      note: note.trim() || null,
     })
 
     if (error) {
@@ -582,6 +585,18 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
                 </Text>
                 <ChevronDown size={16} color={COLORS.muted} strokeWidth={2} />
               </TouchableOpacity>
+
+              <Text style={styles.label}>Poznámka (volitelné)</Text>
+              <TextInput
+                style={[styles.input, styles.inputMultiline]}
+                placeholder="např. Sraz u fontány, přineste reflexní vestu…"
+                placeholderTextColor={COLORS.muted}
+                value={note}
+                onChangeText={setNote}
+                multiline
+                numberOfLines={3}
+                returnKeyType="done"
+              />
 
               <TouchableOpacity
                 style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
@@ -808,6 +823,10 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.text,
     marginBottom: 16,
+  },
+  inputMultiline: {
+    height: 80,
+    textAlignVertical: 'top',
   },
   picker: {
     flexDirection: 'row',

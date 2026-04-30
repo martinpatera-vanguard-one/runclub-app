@@ -13,12 +13,13 @@ import {
   Animated,
   Dimensions,
 } from 'react-native'
+import { Image as ExpoImage } from 'expo-image'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useFocusEffect, useRouter } from 'expo-router'
 // TODO: deep link — odkomentovat až bude slug sloupec v DB a doména
 // import { useLocalSearchParams } from 'expo-router'
-import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut, MapPin, Share2 } from 'lucide-react-native'
+import { ChevronDown, Check, Plus, X, Users, MoreVertical, LogOut, MapPin, Share2, Camera } from 'lucide-react-native'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
 import { useEventParticipation } from '../../contexts/eventParticipation'
@@ -26,6 +27,7 @@ import { useClubRuns } from '../../contexts/clubRuns'
 import { CreateRunModal } from '../../components/CreateRunModal'
 import { ShareSheet } from '../../components/ShareSheet'
 import { shareStoryCard } from '../../lib/share'
+import { pickAndUploadClubCover } from '../../lib/uploadClubCover'
 
 // TODO: deep link slug handling — aktivovat až bude slug v DB a doména
 // Použití:
@@ -113,6 +115,7 @@ type Club = {
   slug: string | null
   description: string | null
   location: string | null
+  cover_image_url: string | null
   memberCount: number
   userRole: 'admin' | 'member'
 }
@@ -129,8 +132,38 @@ export default function KlubScreen() {
   const [newLocation, setNewLocation] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [showCreateRun, setShowCreateRun] = useState(false)
+  const [uploadingCover, setUploadingCover] = useState(false)
   const { refresh: refreshRuns } = useClubRuns()
   const router = useRouter()
+
+  function handleUploadCover() {
+    if (!selectedClub) return
+    Alert.alert(
+      'Foto klubu',
+      undefined,
+      [
+        { text: 'Vyfotit', onPress: () => doUploadCover('camera') },
+        { text: 'Z galerie', onPress: () => doUploadCover('library') },
+        { text: 'Zrušit', style: 'cancel' },
+      ],
+    )
+  }
+
+  async function doUploadCover(source: 'camera' | 'library') {
+    if (!selectedClub) return
+    setUploadingCover(true)
+    try {
+      const url = await pickAndUploadClubCover(selectedClub.id, source)
+      if (url) {
+        setClubs((prev) => prev.map((c) => c.id === selectedClub.id ? { ...c, cover_image_url: url } : c))
+        setSelectedClub((prev) => prev ? { ...prev, cover_image_url: url } : prev)
+      }
+    } catch (e: unknown) {
+      Alert.alert('Chyba', (e instanceof Error ? e.message : null) ?? 'Nepodařilo se nahrát obrázek.')
+    } finally {
+      setUploadingCover(false)
+    }
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -163,7 +196,7 @@ export default function KlubScreen() {
 
     const { data: clubData, error: clubError } = await supabase
       .from('clubs')
-      .select('id, name, description, location')
+      .select('id, name, description, location, cover_image_url')
       .in('id', clubIds)
 
     if (clubError || !clubData) { setLoading(false); return }
@@ -178,12 +211,13 @@ export default function KlubScreen() {
       countMap[r.club_id] = (countMap[r.club_id] ?? 0) + 1
     })
 
-    const mapped: Club[] = clubData.map((c: { id: string; name: string; description: string | null; location: string | null }) => ({
+    const mapped: Club[] = clubData.map((c: { id: string; name: string; description: string | null; location: string | null; cover_image_url: string | null }) => ({
       id: c.id,
       name: c.name,
       slug: null,
       description: c.description ?? null,
       location: c.location ?? null,
+      cover_image_url: c.cover_image_url ?? null,
       memberCount: countMap[c.id] ?? 0,
       userRole: roleMap[c.id] ?? 'member',
     }))
@@ -226,7 +260,7 @@ export default function KlubScreen() {
       return
     }
 
-    const newClub: Club = { id: club.id, name: club.name, slug: null, description: newDesc.trim() || null, location: newLocation, memberCount: 1, userRole: 'admin' }
+    const newClub: Club = { id: club.id, name: club.name, slug: null, description: newDesc.trim() || null, location: newLocation, cover_image_url: null, memberCount: 1, userRole: 'admin' }
     setClubs((prev) => [...prev, newClub])
     setSelectedClub(newClub)
     setNewName('')
@@ -296,6 +330,11 @@ export default function KlubScreen() {
             setClubs((prev) => prev.filter((c) => c.id !== clubId))
             setDetailClub(null)
           }}
+          onCoverUpdate={(clubId, url) => {
+            setClubs((prev) => prev.map((c) => c.id === clubId ? { ...c, cover_image_url: url } : c))
+            setDetailClub((prev) => prev ? { ...prev, cover_image_url: url } : prev)
+            setSelectedClub((prev) => prev?.id === clubId ? { ...prev, cover_image_url: url } : prev)
+          }}
         />
 
       </View>
@@ -306,7 +345,15 @@ export default function KlubScreen() {
     <View style={styles.container}>
       <SafeAreaView edges={['top']} style={styles.headerSafe}>
         <View style={styles.header}>
-          <View style={styles.headerDecor} />
+          {selectedClub.cover_image_url ? (
+            <>
+              <ExpoImage source={{ uri: selectedClub.cover_image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+              <View style={[StyleSheet.absoluteFill, styles.headerGradient]} />
+            </>
+          ) : (
+            <View style={styles.headerDecor} />
+          )}
+
           <View style={styles.headerTop}>
             <Text style={styles.headerSubtitle}>Tvůj klub</Text>
             <View style={styles.headerButtons}>
@@ -337,6 +384,15 @@ export default function KlubScreen() {
               <Text style={styles.statLabel}>členů</Text>
             </View>
           </View>
+
+          {selectedClub.userRole === 'admin' && (
+            <TouchableOpacity style={styles.coverEditBtn} onPress={handleUploadCover} disabled={uploadingCover}>
+              {uploadingCover
+                ? <ActivityIndicator size="small" color="#FFF" />
+                : <Camera size={15} color="#FFF" strokeWidth={2} />
+              }
+            </TouchableOpacity>
+          )}
         </View>
       </SafeAreaView>
 
@@ -434,6 +490,11 @@ export default function KlubScreen() {
           setSelectedClub(remaining[0] ?? null)
           setDetailClub(null)
         }}
+        onCoverUpdate={(clubId, url) => {
+          setClubs((prev) => prev.map((c) => c.id === clubId ? { ...c, cover_image_url: url } : c))
+          setDetailClub((prev) => prev ? { ...prev, cover_image_url: url } : prev)
+          setSelectedClub((prev) => prev?.id === clubId ? { ...prev, cover_image_url: url } : prev)
+        }}
       />
 
       {selectedClub && (
@@ -456,9 +517,10 @@ type ClubDetailSheetProps = {
   club: Club | null
   onClose: () => void
   onLeave: (clubId: string, isAdmin: boolean) => Promise<void>
+  onCoverUpdate: (clubId: string, url: string) => void
 }
 
-function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
+function ClubDetailSheet({ club, onClose, onLeave, onCoverUpdate }: ClubDetailSheetProps) {
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current
   const [menuOpen, setMenuOpen] = useState(false)
   const [leaving, setLeaving] = useState(false)
@@ -466,6 +528,7 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
   const [runsLoading, setRunsLoading] = useState(false)
   const [showCreateRun, setShowCreateRun] = useState(false)
   const [showShare, setShowShare] = useState(false)
+  const [uploadingCover, setUploadingCover] = useState(false)
   const { pendingOpenId } = useEventParticipation()
   const { refresh: refreshRuns } = useClubRuns()
   const router = useRouter()
@@ -533,30 +596,97 @@ function ClubDetailSheet({ club, onClose, onLeave }: ClubDetailSheetProps) {
     )
   }
 
+  function handleCoverUpload() {
+    if (!club) return
+    Alert.alert(
+      'Foto klubu',
+      undefined,
+      [
+        { text: 'Vyfotit', onPress: () => doUpload('camera') },
+        { text: 'Z galerie', onPress: () => doUpload('library') },
+        { text: 'Zrušit', style: 'cancel' },
+      ],
+    )
+  }
+
+  async function doUpload(source: 'camera' | 'library') {
+    if (!club) return
+    console.log('[cover] doUpload start, clubId:', club.id, 'source:', source)
+    setUploadingCover(true)
+    try {
+      const url = await pickAndUploadClubCover(club.id, source)
+      console.log('[cover] doUpload got url:', url)
+      if (url) {
+        console.log('[cover] calling onCoverUpdate')
+        onCoverUpdate(club.id, url)
+      }
+    } catch (e: unknown) {
+      console.error('[cover] doUpload error:', e)
+      const msg = e instanceof Error ? e.message : String(e)
+      Alert.alert('Chyba nahrávání', msg)
+    } finally {
+      setUploadingCover(false)
+    }
+  }
+
   if (!club) return null
 
   return (
     <Animated.View style={[styles.detailOverlay, { transform: [{ translateY: slideAnim }] }]}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        <View style={styles.detailTopBar}>
-          <TouchableOpacity style={styles.detailMenuBtn} onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <MoreVertical size={20} color={COLORS.muted} strokeWidth={2} />
-          </TouchableOpacity>
-          <View style={styles.detailTopRight}>
-            <TouchableOpacity style={styles.detailCloseBtn} onPress={() => setShowShare(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Share2 size={20} color={COLORS.muted} strokeWidth={2} />
+        {/* Cover image area */}
+        <View style={styles.detailCoverArea}>
+          {club.cover_image_url ? (
+            <>
+              <ExpoImage
+                source={{ uri: club.cover_image_url }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+                transition={300}
+                onLoad={() => console.log('[cover] ExpoImage loaded')}
+                onError={(e) => console.error('[cover] ExpoImage error:', e.error)}
+              />
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.25)' }]} />
+            </>
+          ) : (
+            <>
+              <View style={[StyleSheet.absoluteFill, styles.detailCoverPlaceholderBg]} />
+              {club.userRole === 'admin' && (
+                <View style={styles.detailCoverCenter}>
+                  <Camera size={30} color="rgba(0,0,0,0.18)" strokeWidth={1.5} />
+                  <Text style={styles.detailCoverHint}>Přidat foto klubu</Text>
+                </View>
+              )}
+            </>
+          )}
+
+          {/* Top bar */}
+          <View style={styles.detailTopBar}>
+            <TouchableOpacity style={styles.detailMenuBtn} onPress={() => setMenuOpen(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <MoreVertical size={20} color={COLORS.muted} strokeWidth={2} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.detailCloseBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <X size={20} color={COLORS.muted} strokeWidth={2} />
-            </TouchableOpacity>
+            <View style={styles.detailTopRight}>
+              <TouchableOpacity style={styles.detailCloseBtn} onPress={() => setShowShare(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Share2 size={20} color={COLORS.muted} strokeWidth={2} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.detailCloseBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <X size={20} color={COLORS.muted} strokeWidth={2} />
+              </TouchableOpacity>
+            </View>
           </View>
+
+          {/* Admin camera edit button - bottom right */}
+          {club.userRole === 'admin' && (
+            <TouchableOpacity style={styles.detailCoverEditBtn} onPress={handleCoverUpload} disabled={uploadingCover}>
+              {uploadingCover
+                ? <ActivityIndicator size="small" color="#FFF" />
+                : <Camera size={15} color="#FFF" strokeWidth={2} />
+              }
+            </TouchableOpacity>
+          )}
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
-          <View style={styles.detailIconWrapper}>
-            <Text style={styles.detailIcon}>🏃</Text>
-          </View>
-
           <Text style={styles.detailName}>{club.name}</Text>
 
           {club.description ? (
@@ -804,6 +934,20 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     position: 'relative',
     overflow: 'hidden',
+  },
+  headerGradient: {
+    backgroundColor: 'rgba(0,0,0,0.42)',
+  },
+  coverEditBtn: {
+    position: 'absolute',
+    bottom: 16,
+    right: 20,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerDecor: {
     position: 'absolute',
@@ -1167,7 +1311,45 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.bg,
     zIndex: 10,
   },
+  detailCoverArea: {
+    height: 190,
+    overflow: 'hidden',
+    backgroundColor: '#DEDAD6',
+  },
+  detailCoverPlaceholderBg: {
+    backgroundColor: '#E8E5E0',
+  },
+  detailCoverCenter: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  detailCoverHint: {
+    fontSize: 13,
+    color: 'rgba(0,0,0,0.3)',
+    fontWeight: '500',
+  },
+  detailCoverEditBtn: {
+    position: 'absolute',
+    bottom: 12,
+    right: 16,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   detailTopBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1247,19 +1429,7 @@ const styles = StyleSheet.create({
   },
   detailContent: {
     padding: 24,
-    paddingTop: 8,
-  },
-  detailIconWrapper: {
-    width: 72,
-    height: 72,
-    borderRadius: 22,
-    backgroundColor: COLORS.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  detailIcon: {
-    fontSize: 36,
+    paddingTop: 20,
   },
   detailName: {
     fontSize: 24,

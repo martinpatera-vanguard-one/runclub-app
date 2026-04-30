@@ -88,6 +88,7 @@ type Run = {
   routeKm: number | null
   paceSec: number | null
   runType: string | null
+  note: string | null
   source: 'event' | 'club_run'
 }
 
@@ -101,6 +102,7 @@ type DbClubRun = {
   lat: number
   lng: number
   address: string | null
+  note: string | null
   clubs: { name: string } | null
   club_run_participants: { id: string }[]
 }
@@ -132,6 +134,7 @@ function mapEventToRun(event: DbEvent, userLocation: { lat: number; lng: number 
     routeKm: event.distance_km,
     paceSec: event.pace_sec_km,
     runType: null,
+    note: null,
     source: 'event',
   }
 }
@@ -163,6 +166,7 @@ function mapClubRunToRun(run: DbClubRun, userLocation: { lat: number; lng: numbe
     routeKm: run.distance_km,
     paceSec: parsePaceTextToSec(run.pace_text),
     runType: run.run_type,
+    note: run.note ?? null,
     source: 'club_run',
   }
 }
@@ -267,7 +271,7 @@ export default function MapaScreen() {
         .order('starts_at', { ascending: true }),
       supabase
         .from('club_runs')
-        .select('id, title, run_type, distance_km, pace_text, starts_at, lat, lng, address, clubs(name), club_run_participants(id)')
+        .select('id, title, run_type, distance_km, pace_text, starts_at, lat, lng, address, note, clubs(name), club_run_participants(id)')
         .gte('starts_at', now)
         .order('starts_at', { ascending: true }),
     ])
@@ -632,6 +636,13 @@ export default function MapaScreen() {
                     <Text style={styles.modalInfoIcon}>📍</Text>
                     <Text style={styles.modalInfoLinkText}>{selectedRun.address}<Text style={styles.modalInfoChevron}> ›</Text></Text>
                   </TouchableOpacity>
+                ) : null}
+
+                {selectedRun.note ? (
+                  <View style={styles.modalInfoRow}>
+                    <Text style={styles.modalInfoIcon}>📝</Text>
+                    <Text style={styles.modalInfoText}>{selectedRun.note}</Text>
+                  </View>
                 ) : null}
 
                 {isParticipant ? (
