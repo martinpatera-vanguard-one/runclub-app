@@ -52,6 +52,7 @@ type Props = {
   adminClubs: AdminClub[]
   onClose: () => void
   onCreated: () => void
+  mode?: 'club' | 'public'
 }
 
 function isoDate(d: Date) {
@@ -304,7 +305,7 @@ function SplitPicker({ visible, title, leftItems, rightItems, leftSelected, righ
 
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
-export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Props) {
+export function CreateRunModal({ visible, adminClubs, onClose, onCreated, mode = 'club' }: Props) {
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current
 
   const [selectedClubId, setSelectedClubId] = useState('')
@@ -386,8 +387,9 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
 
   const selectedClub = adminClubs.find((c) => c.id === selectedClubId)
 
-  const canSubmit =
-    !!title.trim() && !!runType && !!selectedClubId && lat !== null && lng !== null && !creating
+  const canSubmit = mode === 'public'
+    ? !!title.trim() && !!runType && lat !== null && lng !== null && !creating
+    : !!title.trim() && !!runType && !!selectedClubId && lat !== null && lng !== null && !creating
 
   async function handleMapPress(coordinate: { latitude: number; longitude: number }) {
     setPendingLat(coordinate.latitude)
@@ -455,10 +457,9 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
     const startsAt = new Date(selectedDate)
     startsAt.setHours(h, m, 0, 0)
 
-    const { error } = await supabase.from('club_runs').insert({
-      club_id: selectedClubId,
+    const payload = {
       created_by: user.id,
-      title: title.trim(),
+      title: trimmedTitle,
       run_type: runType,
       distance_km: parseFloat(`${distLeft}.${distRight}`),
       pace_text: paceLeft === '' ? null : `${paceLeft}:${paceRight}`,
@@ -466,13 +467,53 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
       lat,
       lng,
       address: address || null,
-      note: note.trim() || null,
-    })
+      note: trimmedNote || null,
+    }
 
-    if (error) {
-      Alert.alert('Chyba', error.message)
-      setCreating(false)
-      return
+    if (mode === 'public') {
+      const { data: existing } = await supabase
+        .from('public_runs')
+        .select('id')
+        .eq('created_by', user.id)
+        .gt('starts_at', new Date().toISOString())
+        .limit(1)
+
+      if (existing && existing.length > 0) {
+        Alert.alert(
+          'Už máš naplánovaný běh',
+          'Každý může mít naplánovaný pouze jeden běh najednou. Jakmile tvůj aktuální běh proběhne, můžeš vytvořit nový.',
+        )
+        setCreating(false)
+        return
+      }
+    }
+
+    if (mode === 'public') {
+      const { data: newRun, error } = await supabase
+        .from('public_runs')
+        .insert(payload)
+        .select('id')
+        .single()
+
+      if (error || !newRun) {
+        Alert.alert('Chyba', error?.message ?? 'Nepodařilo se vytvořit běh.')
+        setCreating(false)
+        return
+      }
+
+      await supabase
+        .from('public_run_participants')
+        .insert({ public_run_id: newRun.id, user_id: user.id })
+    } else {
+      const { error } = await supabase
+        .from('club_runs')
+        .insert({ ...payload, club_id: selectedClubId })
+
+      if (error) {
+        Alert.alert('Chyba', error.message)
+        setCreating(false)
+        return
+      }
     }
 
     setCreating(false)
@@ -493,9 +534,18 @@ export function CreateRunModal({ visible, adminClubs, onClose, onCreated }: Prop
 
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>
-              <View>
-                <Text style={styles.sheetTitle}>Nový běh</Text>
-                {selectedClub && <Text style={styles.sheetSubtitle}>{selectedClub.name}</Text>}
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <Text style={styles.sheetTitle}>
+                  {mode === 'club' ? 'Klubový běh' : 'Nový běh'}
+                </Text>
+                {mode === 'club' && selectedClub && (
+                  <Text style={styles.sheetSubtitle}>{selectedClub.name}</Text>
+                )}
+                <View style={[styles.modeBadge, mode === 'public' && styles.modeBadgePublic]}>
+                  <Text style={[styles.modeBadgeText, mode === 'public' && styles.modeBadgeTextPublic]}>
+                    {mode === 'club' ? '🏃 Pro členy klubu' : '🌍 Otevřený běh'}
+                  </Text>
+                </View>
               </View>
               <TouchableOpacity
                 onPress={onClose}
@@ -983,6 +1033,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.muted,
     textAlign: 'center',
+  },
+  modeBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  modeBadgePublic: {
+    backgroundColor: '#E8F4FD',
+  },
+  modeBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  modeBadgeTextPublic: {
+    color: '#2E7DB8',
   },
 })
 

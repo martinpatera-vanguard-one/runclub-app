@@ -10,6 +10,7 @@ import {
   Pressable,
   ActivityIndicator,
   Linking,
+  Alert,
 } from 'react-native'
 import { Image as ExpoImage } from 'expo-image'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -22,6 +23,7 @@ import { COLORS } from '../../constants/theme'
 import { Zap, Route, X } from 'lucide-react-native'
 import { useEventParticipation } from '../../contexts/eventParticipation'
 import { useClubRuns } from '../../contexts/clubRuns'
+import { CreateRunModal } from '../../components/CreateRunModal'
 
 const FOCUSED_DELTA = 0.012
 const FILTERS = ['Dnes', 'Zítra', 'Tento týden']
@@ -91,7 +93,8 @@ type Run = {
   paceSec: number | null
   runType: string | null
   note: string | null
-  source: 'event' | 'club_run'
+  source: 'event' | 'club_run' | 'public_run'
+  createdBy?: string
 }
 
 type DbClubRun = {
@@ -107,6 +110,22 @@ type DbClubRun = {
   note: string | null
   clubs: { name: string } | null
   club_run_participants: { id: string }[]
+}
+
+type DbPublicRun = {
+  id: string
+  created_by: string
+  title: string
+  run_type: string
+  distance_km: number | null
+  pace_text: string | null
+  starts_at: string
+  lat: number
+  lng: number
+  address: string | null
+  note: string | null
+  users: { full_name: string } | null
+  public_run_participants: { id: string }[]
 }
 
 function formatPace(secPerKm: number | null): string | null {
@@ -173,6 +192,32 @@ function mapClubRunToRun(run: DbClubRun, userLocation: { lat: number; lng: numbe
   }
 }
 
+function mapPublicRunToRun(run: DbPublicRun, userLocation: { lat: number; lng: number } | null): Run {
+  return {
+    id: `pr_${run.id}`,
+    label: run.title,
+    clubName: run.users?.full_name ?? 'Neznámý uživatel',
+    lat: run.lat,
+    lng: run.lng,
+    address: run.address ?? '',
+    time: getTimeLabel(run.starts_at),
+    dayLabel: getDayLabel(run.starts_at),
+    startsAt: run.starts_at,
+    people: run.public_run_participants?.length ?? 0,
+    maxParticipants: null,
+    priceCzk: 0,
+    distKm: userLocation
+      ? haversineKm(userLocation.lat, userLocation.lng, run.lat, run.lng)
+      : null,
+    routeKm: run.distance_km,
+    paceSec: parsePaceTextToSec(run.pace_text),
+    runType: run.run_type,
+    note: run.note ?? null,
+    source: 'public_run',
+    createdBy: run.created_by,
+  }
+}
+
 type UserLocation = { lat: number; lng: number }
 
 const SHEET_HEIGHT = 300
@@ -191,7 +236,9 @@ export default function MapaScreen() {
   const [userId, setUserId] = useState<string | null>(null)
   const [joinLoading, setJoinLoading] = useState(false)
   const [confirmLeaveVisible, setConfirmLeaveVisible] = useState(false)
+  const [showCreateRun, setShowCreateRun] = useState(false)
   const [myClubRunIds, setMyClubRunIds] = useState<Set<string>>(new Set())
+  const [myPublicRunIds, setMyPublicRunIds] = useState<Set<string>>(new Set())
   const [showParticipants, setShowParticipants] = useState(false)
   const [participants, setParticipants] = useState<{ id: string; full_name: string; avatar_url: string | null }[]>([])
   const [participantsLoading, setParticipantsLoading] = useState(false)
@@ -201,8 +248,14 @@ export default function MapaScreen() {
   const isParticipant = !!selectedRun && (
     selectedRun.source === 'event'
       ? myEventIds.has(selectedRun.id)
-      : myClubRunIds.has(selectedRun.id.slice(3))
+      : selectedRun.source === 'club_run'
+      ? myClubRunIds.has(selectedRun.id.slice(3))
+      : myPublicRunIds.has(selectedRun.id.slice(3))
   )
+
+  const isCreator = !!selectedRun &&
+    selectedRun.source === 'public_run' &&
+    selectedRun.createdBy === userId
 
   useEffect(() => {
     ;(async () => {
@@ -222,8 +275,18 @@ export default function MapaScreen() {
     return () => subscription.unsubscribe()
   }, [])
 
+  function refreshMyPublicRunIds(uid: string) {
+    supabase
+      .from('public_run_participants')
+      .select('public_run_id')
+      .eq('user_id', uid)
+      .then(({ data }) => {
+        setMyPublicRunIds(new Set((data ?? []).map((r: { public_run_id: string }) => r.public_run_id)))
+      })
+  }
+
   useEffect(() => {
-    if (!userId) { setMyClubRunIds(new Set()); return }
+    if (!userId) { setMyClubRunIds(new Set()); setMyPublicRunIds(new Set()); return }
     supabase
       .from('club_run_participants')
       .select('club_run_id')
@@ -231,6 +294,7 @@ export default function MapaScreen() {
       .then(({ data }) => {
         setMyClubRunIds(new Set((data ?? []).map((r: { club_run_id: string }) => r.club_run_id)))
       })
+    refreshMyPublicRunIds(userId)
   }, [userId])
 
   useEffect(() => {
@@ -263,7 +327,7 @@ export default function MapaScreen() {
     setLoading(true)
     const now = new Date().toISOString()
 
-    const [eventsResult, clubRunsResult] = await Promise.all([
+    const [eventsResult, clubRunsResult, publicRunsResult] = await Promise.all([
       supabase
         .from('events')
         .select(`
@@ -279,6 +343,11 @@ export default function MapaScreen() {
         .select('id, title, run_type, distance_km, pace_text, starts_at, lat, lng, address, note, clubs(name), club_run_participants(id)')
         .gte('starts_at', now)
         .order('starts_at', { ascending: true }),
+      supabase
+        .from('public_runs')
+        .select('id, created_by, title, run_type, distance_km, pace_text, starts_at, lat, lng, address, note, users(full_name), public_run_participants(id)')
+        .gte('starts_at', now)
+        .order('starts_at', { ascending: true }),
     ])
 
     if (eventsResult.error) {
@@ -291,8 +360,11 @@ export default function MapaScreen() {
     const mappedClubRuns = ((clubRunsResult.data ?? []) as unknown as DbClubRun[]).map((r) =>
       mapClubRunToRun(r, userLocation),
     )
+    const mappedPublicRuns = ((publicRunsResult.data ?? []) as unknown as DbPublicRun[]).map((r) =>
+      mapPublicRunToRun(r, userLocation),
+    )
 
-    const combined = [...mappedEvents, ...mappedClubRuns].sort(
+    const combined = [...mappedEvents, ...mappedClubRuns, ...mappedPublicRuns].sort(
       (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
     )
     setRuns(combined)
@@ -309,6 +381,17 @@ export default function MapaScreen() {
         .insert({ club_run_id: rawId, user_id: userId })
       if (!error) {
         setMyClubRunIds(prev => new Set([...prev, rawId]))
+        const updated = { ...selectedRun, people: selectedRun.people + 1 }
+        setSelectedRun(updated)
+        setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+      }
+    } else if (selectedRun.source === 'public_run') {
+      const rawId = selectedRun.id.slice(3)
+      const { error } = await supabase
+        .from('public_run_participants')
+        .insert({ public_run_id: rawId, user_id: userId })
+      if (!error) {
+        setMyPublicRunIds(prev => new Set([...prev, rawId]))
         const updated = { ...selectedRun, people: selectedRun.people + 1 }
         setSelectedRun(updated)
         setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
@@ -343,6 +426,33 @@ export default function MapaScreen() {
         setSelectedRun(updated)
         setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
       }
+    } else if (selectedRun.source === 'public_run') {
+      const rawId = selectedRun.id.slice(3)
+      if (isCreator) {
+        // Zakladatel — smaž celý běh (CASCADE smaže i účastníky)
+        const { error } = await supabase
+          .from('public_runs')
+          .delete()
+          .eq('id', rawId)
+        if (!error) {
+          setMyPublicRunIds(prev => { const s = new Set(prev); s.delete(rawId); return s })
+          setRuns(prev => prev.filter(r => r.id !== selectedRun.id))
+          setConfirmLeaveVisible(false)
+          setSelectedRun(null)
+        }
+      } else {
+        const { error } = await supabase
+          .from('public_run_participants')
+          .delete()
+          .eq('public_run_id', rawId)
+          .eq('user_id', userId)
+        if (!error) {
+          setMyPublicRunIds(prev => { const s = new Set(prev); s.delete(rawId); return s })
+          const updated = { ...selectedRun, people: Math.max(0, selectedRun.people - 1) }
+          setSelectedRun(updated)
+          setRuns(prev => prev.map(r => r.id === selectedRun.id ? updated : r))
+        }
+      }
     } else {
       const { error } = await supabase
         .from('event_participants')
@@ -360,6 +470,28 @@ export default function MapaScreen() {
     setJoinLoading(false)
   }
 
+  async function handleFabPress() {
+    if (!userId) {
+      setShowCreateRun(true)
+      return
+    }
+    const { data } = await supabase
+      .from('public_runs')
+      .select('id')
+      .eq('created_by', userId)
+      .gt('starts_at', new Date().toISOString())
+      .limit(1)
+
+    if (data && data.length > 0) {
+      Alert.alert(
+        'Už máš naplánovaný běh',
+        'Každý může mít naplánovaný pouze jeden běh najednou. Jakmile tvůj aktuální běh proběhne, můžeš vytvořit nový.',
+      )
+      return
+    }
+    setShowCreateRun(true)
+  }
+
   const closeModal = () => {
     setConfirmLeaveVisible(false)
     setSelectedRun(null)
@@ -367,9 +499,13 @@ export default function MapaScreen() {
 
   async function fetchParticipants(run: Run) {
     setParticipantsLoading(true)
-    const rawId = run.source === 'club_run' ? run.id.slice(3) : run.id
-    const table = run.source === 'event' ? 'event_participants' : 'club_run_participants'
-    const idCol = run.source === 'event' ? 'event_id' : 'club_run_id'
+    const rawId = run.source === 'event' ? run.id : run.id.slice(3)
+    const table = run.source === 'event' ? 'event_participants'
+      : run.source === 'club_run' ? 'club_run_participants'
+      : 'public_run_participants'
+    const idCol = run.source === 'event' ? 'event_id'
+      : run.source === 'club_run' ? 'club_run_id'
+      : 'public_run_id'
 
     const { data: rows } = await supabase
       .from(table)
@@ -517,6 +653,13 @@ export default function MapaScreen() {
         </View>
       </SafeAreaView>
 
+      {/* FAB - přidat běh */}
+      <Animated.View style={[styles.fab, { bottom: containerH - sheetTop + 10, transform: [{ translateY: translateY }] }]}>
+        <TouchableOpacity style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }} onPress={handleFabPress}>
+          <Text style={styles.fabIcon}>+</Text>
+        </TouchableOpacity>
+      </Animated.View>
+
       {/* Bottom sheet */}
       <Animated.View
         style={[styles.bottomSheet, { top: sheetTop, height: SHEET_HEIGHT, paddingBottom: insets.bottom + 8, transform: [{ translateY }] }]}
@@ -596,7 +739,9 @@ export default function MapaScreen() {
                       )}
                     </View>
                     <Text style={styles.modalClub}>
-                      <Text style={styles.modalClubLabel}>Klub: </Text>
+                      <Text style={styles.modalClubLabel}>
+                        {selectedRun.source === 'public_run' ? 'Autor: ' : 'Klub: '}
+                      </Text>
                       {selectedRun.clubName || '—'}
                     </Text>
                     {selectedRun.runType && (
@@ -689,13 +834,15 @@ export default function MapaScreen() {
 
                 {isParticipant ? (
                   <TouchableOpacity
-                    style={[styles.modalJoinBtn, styles.modalLeaveBtn]}
+                    style={[styles.modalJoinBtn, isCreator ? styles.modalDeleteBtn : styles.modalLeaveBtn]}
                     onPress={() => setConfirmLeaveVisible(true)}
                     disabled={joinLoading}
                   >
                     {joinLoading
                       ? <ActivityIndicator color={COLORS.muted} />
-                      : <Text style={styles.modalLeaveText}>Odhlásit se</Text>
+                      : <Text style={isCreator ? styles.modalDeleteText : styles.modalLeaveText}>
+                          {isCreator ? 'Zrušit běh' : 'Odhlásit se'}
+                        </Text>
                     }
                   </TouchableOpacity>
                 ) : (
@@ -752,16 +899,21 @@ export default function MapaScreen() {
                 {confirmLeaveVisible && (
                   <Pressable style={styles.confirmOverlay} onPress={() => setConfirmLeaveVisible(false)}>
                     <Pressable style={styles.confirmBox} onPress={() => {}}>
-                      <Text style={styles.confirmTitle}>Odhlásit se z běhu?</Text>
+                      <Text style={styles.confirmTitle}>
+                        {isCreator ? 'Zrušit běh?' : 'Odhlásit se z běhu?'}
+                      </Text>
                       <Text style={styles.confirmBody}>
-                        Opravdu se chceš odhlásit z běhu „{selectedRun.label}“?
+                        {isCreator
+                          ? `Jsi zakladatel běhu „${selectedRun.label}”. Pokud ho zrušíš, běh se smaže pro všechny účastníky.`
+                          : `Opravdu se chceš odhlásit z běhu „${selectedRun.label}”?`
+                        }
                       </Text>
                       <View style={styles.confirmButtons}>
                         <TouchableOpacity
                           style={styles.confirmCancel}
                           onPress={() => setConfirmLeaveVisible(false)}
                         >
-                          <Text style={styles.confirmCancelText}>Zůstat</Text>
+                          <Text style={styles.confirmCancelText}>Zpět</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={styles.confirmLeave}
@@ -770,7 +922,7 @@ export default function MapaScreen() {
                         >
                           {joinLoading
                             ? <ActivityIndicator color="#FFF" />
-                            : <Text style={styles.confirmLeaveText}>Odhlásit se</Text>
+                            : <Text style={styles.confirmLeaveText}>{isCreator ? 'Zrušit běh' : 'Odhlásit se'}</Text>
                           }
                         </TouchableOpacity>
                       </View>
@@ -782,6 +934,14 @@ export default function MapaScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <CreateRunModal
+        visible={showCreateRun}
+        adminClubs={[{ id: 'placeholder', name: '' }]}
+        mode="public"
+        onClose={() => setShowCreateRun(false)}
+        onCreated={() => { setShowCreateRun(false); fetchEvents(); if (userId) refreshMyPublicRunIds(userId) }}
+      />
 
     </View>
   )
@@ -872,6 +1032,8 @@ const styles = StyleSheet.create({
   modalInfoChevron: { fontSize: 16, color: COLORS.accent },
   modalJoinBtn: { backgroundColor: COLORS.accent, borderRadius: 20, paddingVertical: 16, alignItems: 'center', marginTop: 8 },
   modalLeaveBtn: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border },
+  modalDeleteBtn: { backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FECACA' },
+  modalDeleteText: { fontSize: 15, fontWeight: '700', color: '#E05252' },
   modalJoinText: { fontSize: 16, fontWeight: '700', color: '#FFF' },
   modalLeaveText: { fontSize: 15, fontWeight: '600', color: COLORS.text },
   confirmOverlay: {
@@ -957,5 +1119,27 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: COLORS.text,
     flex: 1,
+  },
+  fab: {
+    position: 'absolute',
+    right: 16,
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: COLORS.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 25,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  fabIcon: {
+    fontSize: 26,
+    fontWeight: '400',
+    color: '#FFF',
+    lineHeight: 30,
   },
 })
