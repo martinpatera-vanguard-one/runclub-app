@@ -262,7 +262,15 @@ export default function MapaScreen() {
       const { status } = await Location.requestForegroundPermissionsAsync()
       if (status === 'granted') {
         const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
-        setUserLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude })
+        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude }
+        setUserLocation(coords)
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          console.log('Saving location for user:', user.id)
+          const { error } = await supabase.from('users').update({ lat: coords.lat, lng: coords.lng }).eq('id', user.id)
+          if (error) console.error('Location save error:', error.message)
+          else console.log('Location saved OK')
+        }
       }
     })()
   }, [])

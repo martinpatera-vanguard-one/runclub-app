@@ -132,38 +132,8 @@ export default function KlubScreen() {
   const [newLocation, setNewLocation] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [showCreateRun, setShowCreateRun] = useState(false)
-  const [uploadingCover, setUploadingCover] = useState(false)
   const { refresh: refreshRuns } = useClubRuns()
   const router = useRouter()
-
-  function handleUploadCover() {
-    if (!selectedClub) return
-    Alert.alert(
-      'Foto klubu',
-      undefined,
-      [
-        { text: 'Vyfotit', onPress: () => doUploadCover('camera') },
-        { text: 'Z galerie', onPress: () => doUploadCover('library') },
-        { text: 'Zrušit', style: 'cancel' },
-      ],
-    )
-  }
-
-  async function doUploadCover(source: 'camera' | 'library') {
-    if (!selectedClub) return
-    setUploadingCover(true)
-    try {
-      const url = await pickAndUploadClubCover(selectedClub.id, source)
-      if (url) {
-        setClubs((prev) => prev.map((c) => c.id === selectedClub.id ? { ...c, cover_image_url: url } : c))
-        setSelectedClub((prev) => prev ? { ...prev, cover_image_url: url } : prev)
-      }
-    } catch (e: unknown) {
-      Alert.alert('Chyba', (e instanceof Error ? e.message : null) ?? 'Nepodařilo se nahrát obrázek.')
-    } finally {
-      setUploadingCover(false)
-    }
-  }
 
   useFocusEffect(
     useCallback(() => {
@@ -369,60 +339,24 @@ export default function KlubScreen() {
 
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={styles.headerSafe}>
-        <View style={styles.header}>
-          {selectedClub.cover_image_url ? (
-            <>
-              <ExpoImage source={{ uri: selectedClub.cover_image_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
-              <View style={[StyleSheet.absoluteFill, styles.headerGradient]} />
-            </>
-          ) : (
-            <View style={styles.headerDecor} />
-          )}
-
-          <View style={styles.headerTop}>
-            <Text style={styles.headerSubtitle}>Tvůj klub</Text>
-            <View style={styles.headerButtons}>
-              <TouchableOpacity style={styles.headerCreateBtn} onPress={openCreate}>
-                <Plus size={16} color="#FFF" strokeWidth={2.5} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {clubs.length === 1 ? (
-            <Text style={styles.headerTitle}>{selectedClub.name}</Text>
-          ) : (
-            <TouchableOpacity style={styles.clubPicker} onPress={() => setDropdownOpen(true)}>
-              <Text style={styles.headerTitle}>{selectedClub.name}</Text>
-              <ChevronDown size={20} color="#FFF" strokeWidth={2.5} />
-            </TouchableOpacity>
-          )}
-
-          <View style={styles.statsRow}>
-            <View style={styles.stat}>
-              <Text style={styles.statNum}>{selectedClub.memberCount}</Text>
-              <Text style={styles.statLabel}>členů</Text>
-            </View>
-          </View>
-
-          {selectedClub.userRole === 'admin' && (
-            <TouchableOpacity style={styles.coverEditBtn} onPress={handleUploadCover} disabled={uploadingCover}>
-              {uploadingCover
-                ? <ActivityIndicator size="small" color="#FFF" />
-                : <Camera size={15} color="#FFF" strokeWidth={2} />
-              }
-            </TouchableOpacity>
-          )}
+      <SafeAreaView edges={['top']}>
+        <View style={styles.simpleHeader}>
+          <Text style={styles.simpleHeaderTitle}>Klub</Text>
+          <TouchableOpacity style={styles.simpleHeaderBtn} onPress={openCreate}>
+            <Plus size={18} color={COLORS.accent} strokeWidth={2.5} />
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
 
       <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Moje kluby</Text>
-          {clubs.map((club, i) => (
+        {(() => {
+          const myClub = clubs.find((c) => c.userRole === 'admin')
+          const memberClubs = clubs.filter((c) => c.userRole === 'member')
+
+          const renderCard = (club: Club, index: number) => (
             <TouchableOpacity
               key={club.id}
-              style={[styles.clubCard, i > 0 && styles.clubCardSpaced, club.id === selectedClub.id && styles.clubCardActive]}
+              style={[styles.clubCard, index > 0 && styles.clubCardSpaced]}
               onPress={() => setDetailClub(club)}
             >
               <View style={styles.clubCardLeft}>
@@ -438,18 +372,37 @@ export default function KlubScreen() {
                   )}
                 </View>
                 <View>
-                  <Text style={[styles.clubCardName, club.id === selectedClub.id && styles.clubCardNameActive]}>
-                    {club.name}
-                  </Text>
+                  <Text style={styles.clubCardName}>{club.name}</Text>
                   <Text style={styles.clubCardMeta}>{club.memberCount} členů</Text>
                 </View>
               </View>
-              {club.id === selectedClub.id && (
-                <Check size={18} color={COLORS.accent} strokeWidth={2.5} />
-              )}
+              <ChevronRight size={16} color={COLORS.muted} strokeWidth={2} />
             </TouchableOpacity>
-          ))}
-        </View>
+          )
+
+          return (
+            <>
+              {myClub && (
+                <View style={styles.section}>
+                  <View style={styles.sectionLabelRow}>
+                    <Text style={styles.sectionTitle}>Tvůj klub</Text>
+                    <View style={styles.ownerBadge}>
+                      <Text style={styles.ownerBadgeText}>Správce</Text>
+                    </View>
+                  </View>
+                  {renderCard(myClub, 0)}
+                </View>
+              )}
+
+              {memberClubs.length > 0 && (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Člen v klubech</Text>
+                  {memberClubs.map((club, i) => renderCard(club, i))}
+                </View>
+              )}
+            </>
+          )
+        })()}
 
         <View style={styles.section}>
           <TouchableOpacity style={styles.findMoreBtn} onPress={() => router.push('/(tabs)/explore')}>
@@ -1010,102 +963,28 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: COLORS.bg,
   },
-  headerSafe: {
-    backgroundColor: COLORS.accent,
-  },
-  header: {
-    backgroundColor: COLORS.accent,
-    padding: 20,
-    paddingBottom: 24,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  headerGradient: {
-    backgroundColor: 'rgba(0,0,0,0.42)',
-  },
-  coverEditBtn: {
-    position: 'absolute',
-    bottom: 16,
-    right: 20,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0,0,0,0.38)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerDecor: {
-    position: 'absolute',
-    top: -30,
-    right: -30,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-  },
-  headerTop: {
+  simpleHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: COLORS.bg,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
   },
-  headerSubtitle: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.7)',
+  simpleHeaderTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.text,
   },
-  headerButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  headerRunBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  headerRunBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFF',
-  },
-  headerCreateBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+  simpleHeaderBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#FFF',
-  },
-  clubPicker: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 24,
-    marginTop: 12,
-  },
-  stat: {
-    gap: 2,
-  },
-  statNum: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#FFF',
-  },
-  statLabel: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.7)',
   },
   scroll: {
     flex: 1,
@@ -1119,6 +998,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
     marginBottom: 10,
+  },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  ownerBadge: {
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  ownerBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.accent,
+    letterSpacing: 0.3,
   },
   clubCard: {
     backgroundColor: COLORS.surface,

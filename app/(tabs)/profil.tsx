@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react'
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Modal } from 'react-native'
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Modal, Linking } from 'react-native'
 import { Image as ExpoImage } from 'expo-image'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { User, Bell, Lock, LogOut, ChevronRight, ChevronLeft, CalendarDays, X, Zap, Route } from 'lucide-react-native'
@@ -327,6 +327,7 @@ export default function ProfilScreen() {
                 item.label === 'Odhlásit se' ? handleSignOut :
                 item.label === 'Můj kalendář' ? () => setShowCalendar(true) :
                 item.label === 'Upravit profil' ? () => router.push('/edit-profil') :
+                item.label === 'Notifikace' ? () => Linking.openSettings() :
                 undefined
               }
               activeOpacity={0.7}
