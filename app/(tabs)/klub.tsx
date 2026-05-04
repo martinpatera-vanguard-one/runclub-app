@@ -252,6 +252,18 @@ export default function KlubScreen() {
       return
     }
 
+    const { count: adminCount } = await supabase
+      .from('club_members')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('role', 'admin')
+
+    if (adminCount && adminCount > 0) {
+      Alert.alert('Omezení', 'Můžeš vlastnit pouze jeden klub. Nejprve opusť nebo smaž stávající klub.')
+      setCreating(false)
+      return
+    }
+
     const { data: club, error: clubError } = await supabase
       .from('clubs')
       .insert({ name: trimmedName, description: trimmedDesc || null, location: newLocation })
@@ -371,12 +383,6 @@ export default function KlubScreen() {
           <View style={styles.headerTop}>
             <Text style={styles.headerSubtitle}>Tvůj klub</Text>
             <View style={styles.headerButtons}>
-              {selectedClub?.userRole === 'admin' && (
-                <TouchableOpacity style={styles.headerRunBtn} onPress={() => setShowCreateRun(true)}>
-                  <Plus size={14} color="#FFF" strokeWidth={2.5} />
-                  <Text style={styles.headerRunBtnText}>Vytvořit běh</Text>
-                </TouchableOpacity>
-              )}
               <TouchableOpacity style={styles.headerCreateBtn} onPress={openCreate}>
                 <Plus size={16} color="#FFF" strokeWidth={2.5} />
               </TouchableOpacity>

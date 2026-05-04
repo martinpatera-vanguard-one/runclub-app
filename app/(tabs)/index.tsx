@@ -20,7 +20,7 @@ import * as Location from 'expo-location'
 import { useFocusEffect } from 'expo-router'
 import { supabase } from '../../lib/supabase'
 import { COLORS } from '../../constants/theme'
-import { Zap, Route, X } from 'lucide-react-native'
+import { Zap, Route, X, LocateFixed } from 'lucide-react-native'
 import { useEventParticipation } from '../../contexts/eventParticipation'
 import { useClubRuns } from '../../contexts/clubRuns'
 import { CreateRunModal } from '../../components/CreateRunModal'
@@ -492,6 +492,28 @@ export default function MapaScreen() {
     setShowCreateRun(true)
   }
 
+  function goToUserLocation() {
+    if (userLocation) {
+      mapRef.current?.animateToRegion(
+        { latitude: userLocation.lat, longitude: userLocation.lng, latitudeDelta: FOCUSED_DELTA, longitudeDelta: FOCUSED_DELTA },
+        400,
+      )
+    } else {
+      Location.requestForegroundPermissionsAsync().then(({ status }) => {
+        if (status === 'granted') {
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).then((loc) => {
+            const loc2 = { lat: loc.coords.latitude, lng: loc.coords.longitude }
+            setUserLocation(loc2)
+            mapRef.current?.animateToRegion(
+              { latitude: loc2.lat, longitude: loc2.lng, latitudeDelta: FOCUSED_DELTA, longitudeDelta: FOCUSED_DELTA },
+              400,
+            )
+          })
+        }
+      })
+    }
+  }
+
   const closeModal = () => {
     setConfirmLeaveVisible(false)
     setSelectedRun(null)
@@ -652,6 +674,13 @@ export default function MapaScreen() {
           </View>
         </View>
       </SafeAreaView>
+
+      {/* Location button */}
+      <Animated.View style={[styles.locationBtn, { bottom: containerH - sheetTop + 10 + 56 + 12, transform: [{ translateY: translateY }] }]}>
+        <TouchableOpacity style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }} onPress={goToUserLocation}>
+          <LocateFixed size={22} color={COLORS.accent} strokeWidth={2} />
+        </TouchableOpacity>
+      </Animated.View>
 
       {/* FAB - přidat běh */}
       <Animated.View style={[styles.fab, { bottom: containerH - sheetTop + 10, transform: [{ translateY: translateY }] }]}>
@@ -1119,6 +1148,22 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: COLORS.text,
     flex: 1,
+  },
+  locationBtn: {
+    position: 'absolute',
+    right: 16,
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 25,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
   },
   fab: {
     position: 'absolute',

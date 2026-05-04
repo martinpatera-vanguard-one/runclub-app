@@ -24,7 +24,6 @@ export default function EditProfilScreen() {
   const [email, setEmail] = useState('')
   const [avatarUri, setAvatarUri] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
-  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -64,17 +63,15 @@ export default function EditProfilScreen() {
     setUploading(true)
     try {
       const uri = await pickAndUploadAvatar(userId, source)
-      if (uri) setAvatarUri(uri)
+      if (uri) {
+        setAvatarUri(uri)
+        router.back()
+      }
     } catch (e: unknown) {
       Alert.alert('Chyba', (e instanceof Error ? e.message : null) ?? 'Nepodařilo se nahrát obrázek.')
     } finally {
       setUploading(false)
     }
-  }
-
-  function handleSave() {
-    setSaved(true)
-    setTimeout(() => router.back(), 1500)
   }
 
   return (
@@ -143,17 +140,6 @@ export default function EditProfilScreen() {
           </View>
         </View>
 
-        {/* Save button */}
-        <TouchableOpacity
-          style={[styles.saveBtn, saved && styles.saveBtnDone]}
-          onPress={handleSave}
-          activeOpacity={0.8}
-          disabled={saved}
-        >
-          <Text style={styles.saveBtnText}>
-            {saved ? 'Uloženo ✓' : 'Uložit změny'}
-          </Text>
-        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   )
@@ -274,28 +260,5 @@ const styles = StyleSheet.create({
   inputReadOnly: {
     color: COLORS.muted,
     backgroundColor: COLORS.bg,
-  },
-  saveBtn: {
-    marginHorizontal: 16,
-    marginTop: 32,
-    backgroundColor: COLORS.accent,
-    borderRadius: 20,
-    paddingVertical: 16,
-    alignItems: 'center',
-    shadowColor: COLORS.accent,
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
-  },
-  saveBtnDone: {
-    backgroundColor: '#22C55E',
-    shadowColor: '#22C55E',
-  },
-  saveBtnText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: 0.3,
   },
 })
