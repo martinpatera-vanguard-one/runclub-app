@@ -11,6 +11,7 @@ import {
   Dimensions,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import { Image as ExpoImage } from 'expo-image'
 import { Search, X, Users, MapPin } from 'lucide-react-native'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useFocusEffect, router } from 'expo-router'
@@ -65,13 +66,30 @@ type DbClubRunExplore = {
   clubs: { name: string } | null
 }
 
+type DbPublicRunExplore = {
+  id: string
+  created_by: string
+  title: string
+  run_type: string
+  lat: number
+  lng: number
+  address: string | null
+  starts_at: string
+  distance_km: number | null
+  pace_text: string | null
+  users: { full_name: string } | null
+  public_run_participants: { id: string }[]
+}
+
 type UnifiedRun =
   | { source: 'event'; data: DbEvent }
   | { source: 'club_run'; data: DbClubRunExplore }
+  | { source: 'public_run'; data: DbPublicRunExplore }
 
 type DbClub = {
   id: string
   name: string
+  cover_image_url: string | null
   club_members: { id: string }[]
 }
 
@@ -81,6 +99,7 @@ type ClubDetail = {
   description: string | null
   location: string | null
   memberCount: number
+  cover_image_url: string | null
 }
 
 type ClubRun = {
@@ -101,19 +120,21 @@ function formatPace(secPerKm: number | null): string | null {
   return `${min}:${sec.toString().padStart(2, '0')} /km`
 }
 
-function getRunStats(item: UnifiedRun): string | null {
+function getRunStats(item: UnifiedRun): string {
   if (item.source === 'event') {
-    const parts = [
-      item.data.distance_km != null ? `${item.data.distance_km} km` : null,
-      formatPace(item.data.pace_sec_km),
-    ].filter(Boolean)
-    return parts.length ? parts.join(' · ') : null
+    const dist = item.data.distance_km != null ? `${item.data.distance_km} km` : null
+    const pace = formatPace(item.data.pace_sec_km) ?? 'Libovolné tempo'
+    return [dist, pace].filter(Boolean).join(' · ')
   }
-  const parts = [
-    item.data.distance_km != null ? `${item.data.distance_km} km` : null,
-    item.data.pace_text ? `${item.data.pace_text} /km` : null,
-  ].filter(Boolean)
-  return parts.length ? parts.join(' · ') : null
+  const dist = item.data.distance_km != null ? `${item.data.distance_km} km` : null
+  const pace = item.data.pace_text ? `${item.data.pace_text} /km` : 'Libovolné tempo'
+  return [dist, pace].filter(Boolean).join(' · ')
+}
+
+function getRunAuthor(item: UnifiedRun): string {
+  if (item.source === 'event') return item.data.clubs?.name ?? 'Neznámý klub'
+  if (item.source === 'club_run') return item.data.clubs?.name ?? 'Neznámý klub'
+  return item.data.users?.full_name ?? 'Neznámý uživatel'
 }
 
 function getDayLabel(startsAt: string) {
@@ -146,6 +167,7 @@ export default function NajitScreen() {
   const [searchText, setSearchText] = useState('')
   const [events, setEvents] = useState<DbEvent[]>([])
   const [clubRuns, setClubRuns] = useState<DbClubRunExplore[]>([])
+  const [publicRuns, setPublicRuns] = useState<DbPublicRunExplore[]>([])
   const [clubs, setClubs] = useState<DbClub[]>([])
   const [detailClub, setDetailClub] = useState<ClubDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -199,7 +221,7 @@ export default function NajitScreen() {
 
     const now = new Date().toISOString()
 
-    const [eventsRes, clubRunsRes, clubsRes, memberRes] = await Promise.all([
+    const [eventsRes, clubRunsRes, publicRunsRes, clubsRes, memberRes] = await Promise.all([
       supabase
         .from('events')
         .select('id, name, lat, lng, address, starts_at, distance_km, pace_sec_km, clubs(name), event_participants(id)')
@@ -211,8 +233,13 @@ export default function NajitScreen() {
         .gte('starts_at', now)
         .order('starts_at', { ascending: true }),
       supabase
+        .from('public_runs')
+        .select('id, created_by, title, run_type, lat, lng, address, starts_at, distance_km, pace_text, users(full_name), public_run_participants(id)')
+        .gte('starts_at', now)
+        .order('starts_at', { ascending: true }),
+      supabase
         .from('clubs')
-        .select('id, name, club_members(id)')
+        .select('id, name, cover_image_url, club_members(id)')
         .order('name', { ascending: true }),
       uid
         ? supabase.from('club_members').select('club_id').eq('user_id', uid)
@@ -221,6 +248,7 @@ export default function NajitScreen() {
 
     if (!eventsRes.error) setEvents(eventsRes.data as unknown as DbEvent[])
     if (!clubRunsRes.error) setClubRuns(clubRunsRes.data as unknown as DbClubRunExplore[])
+    if (!publicRunsRes.error) setPublicRuns(publicRunsRes.data as unknown as DbPublicRunExplore[])
     if (!clubsRes.error) setClubs(clubsRes.data as unknown as DbClub[])
     if (memberRes.data) {
       setMyClubIds(new Set(memberRes.data.map((r: { club_id: string }) => r.club_id)))
@@ -284,7 +312,8 @@ export default function NajitScreen() {
   const filteredRuns = useCallback((): UnifiedRun[] => {
     const allEvents: UnifiedRun[] = events.map((e) => ({ source: 'event', data: e }))
     const allClubRuns: UnifiedRun[] = clubRuns.map((r) => ({ source: 'club_run', data: r }))
-    let list: UnifiedRun[] = [...allEvents, ...allClubRuns].sort(
+    const allPublicRuns: UnifiedRun[] = publicRuns.map((r) => ({ source: 'public_run', data: r }))
+    let list: UnifiedRun[] = [...allEvents, ...allClubRuns, ...allPublicRuns].sort(
       (a, b) =>
         new Date(a.data.starts_at).getTime() - new Date(b.data.starts_at).getTime(),
     )
@@ -296,6 +325,13 @@ export default function NajitScreen() {
           return (
             item.data.name.toLowerCase().includes(q) ||
             (item.data.clubs?.name ?? '').toLowerCase().includes(q) ||
+            (item.data.address ?? '').toLowerCase().includes(q)
+          )
+        }
+        if (item.source === 'public_run') {
+          return (
+            item.data.title.toLowerCase().includes(q) ||
+            (item.data.users?.full_name ?? '').toLowerCase().includes(q) ||
             (item.data.address ?? '').toLowerCase().includes(q)
           )
         }
@@ -324,7 +360,7 @@ export default function NajitScreen() {
     }
 
     return list
-  }, [events, clubRuns, searchText, activeFilter, userLocation])
+  }, [events, clubRuns, publicRuns, searchText, activeFilter, userLocation])
 
   const filteredClubs = useCallback(() => {
     if (!searchText.trim()) return clubs
@@ -406,14 +442,21 @@ export default function NajitScreen() {
               ) : (
                 <View style={{ paddingTop: 8 }}>
                   {visibleRuns.map((item) => {
-                    const runId = item.source === 'event' ? item.data.id : `cr_${item.data.id}`
+                    const runId = item.source === 'event' ? item.data.id
+                      : item.source === 'public_run' ? `pr_${item.data.id}`
+                      : `cr_${item.data.id}`
                     const name = item.source === 'event' ? item.data.name : item.data.title
-                    const clubName = item.data.clubs?.name ?? 'Neznámý klub'
+                    const authorName = getRunAuthor(item)
                     const stats = getRunStats(item)
-                    const attendees = item.source === 'event' ? (item.data.event_participants ?? []) : []
+                    const attendees = item.source === 'event'
+                      ? (item.data.event_participants ?? [])
+                      : item.source === 'public_run'
+                      ? (item.data.public_run_participants ?? [])
+                      : []
                     const extra = Math.max(0, attendees.length - 3)
                     const shown = attendees.slice(0, 3)
                     const isClubRun = item.source === 'club_run'
+                    const isPublicRun = item.source === 'public_run'
 
                     return (
                       <TouchableOpacity
@@ -424,8 +467,8 @@ export default function NajitScreen() {
                       >
                         <View style={styles.eventCardTop}>
                           <View style={styles.eventTagRow}>
-                            <Text style={styles.eventTag}>{clubName}</Text>
-                            {isClubRun && (
+                            <Text style={styles.eventTag}>{authorName}</Text>
+                            {(isClubRun || isPublicRun) && (
                               <View style={styles.runTypeBadge}>
                                 <Text style={styles.runTypeBadgeText}>
                                   {RUN_TYPE_LABELS[item.data.run_type] ?? item.data.run_type}
@@ -438,37 +481,30 @@ export default function NajitScreen() {
                             {getDayLabel(item.data.starts_at)} · {getTimeLabel(item.data.starts_at)}
                             {item.data.address ? ` · ${item.data.address}` : ''}
                           </Text>
-                          {stats && <Text style={styles.eventRunStats}>{stats}</Text>}
+                          <Text style={styles.eventRunStats}>{stats}</Text>
                         </View>
                         <View style={styles.eventCardBottom}>
                           {isClubRun ? (
                             <Text style={styles.noAttendeesText}>Klubový běh</Text>
+                          ) : attendees.length === 0 ? (
+                            <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
                           ) : (
-                            <View style={styles.avatars}>
-                              {shown.map((_, i) => (
-                                <View
-                                  key={i}
-                                  style={[
-                                    styles.avatar,
-                                    { backgroundColor: AVATAR_COLORS[i % AVATAR_COLORS.length].bg, zIndex: 10 - i },
-                                  ]}
-                                >
-                                  <Text style={[styles.avatarText, { color: AVATAR_COLORS[i % AVATAR_COLORS.length].text }]}>
-                                    {i + 1}
-                                  </Text>
-                                </View>
-                              ))}
-                              {extra > 0 && (
-                                <View style={[styles.avatar, styles.avatarExtra]}>
-                                  <Text style={styles.avatarExtraText}>+{extra}</Text>
-                                </View>
-                              )}
-                              {attendees.length === 0 && (
-                                <Text style={styles.noAttendeesText}>Nikdo zatím</Text>
-                              )}
-                            </View>
+                            <Text style={styles.noAttendeesText}>
+                              {attendees.length === 1
+                                ? '1 přihlášený'
+                                : attendees.length < 5
+                                ? `${attendees.length} přihlášení`
+                                : `${attendees.length} přihlášených`}
+                            </Text>
                           )}
                           {isClubRun ? (
+                            <TouchableOpacity
+                              style={styles.joinBtnRegistered}
+                              onPress={() => openOnMap(runId)}
+                            >
+                              <Text style={styles.joinBtnRegisteredText}>Zobrazit na mapě →</Text>
+                            </TouchableOpacity>
+                          ) : isPublicRun ? (
                             <TouchableOpacity
                               style={styles.joinBtnRegistered}
                               onPress={() => openOnMap(runId)}
@@ -525,11 +561,20 @@ export default function NajitScreen() {
                         description: null,
                         location: null,
                         memberCount: club.club_members?.length ?? 0,
+                        cover_image_url: club.cover_image_url ?? null,
                       })}
                     >
                       <View style={styles.clubCardLeft}>
-                        <View style={styles.clubIconWrapper}>
-                          <Text style={styles.clubIcon}>🏃</Text>
+                        <View style={[styles.clubIconWrapper, !!club.cover_image_url && { backgroundColor: 'transparent' }]}>
+                          {club.cover_image_url ? (
+                            <ExpoImage
+                              source={{ uri: club.cover_image_url }}
+                              style={{ width: 46, height: 46, borderRadius: 14 }}
+                              contentFit="cover"
+                            />
+                          ) : (
+                            <Text style={styles.clubIcon}>🏃</Text>
+                          )}
                         </View>
                         <View>
                           <Text style={styles.clubName}>{club.name}</Text>
@@ -590,7 +635,7 @@ function ExploreClubDetailSheet({ club, isMember, joiningId, onClose, onJoin }: 
   const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current
   const [upcomingRuns, setUpcomingRuns] = useState<ClubRun[]>([])
   const [runsLoading, setRunsLoading] = useState(false)
-  const [fullDetail, setFullDetail] = useState<{ description: string | null; location: string | null } | null>(null)
+  const [fullDetail, setFullDetail] = useState<{ description: string | null; location: string | null; cover_image_url: string | null } | null>(null)
   const { pendingOpenId } = useEventParticipation()
 
   function openRunOnMap(runId: string) {
@@ -626,10 +671,10 @@ function ExploreClubDetailSheet({ club, isMember, joiningId, onClose, onJoin }: 
   async function fetchClubDetail(clubId: string) {
     const { data } = await supabase
       .from('clubs')
-      .select('description, location')
+      .select('description, location, cover_image_url')
       .eq('id', clubId)
       .single()
-    if (data) setFullDetail({ description: data.description ?? null, location: data.location ?? null })
+    if (data) setFullDetail({ description: data.description ?? null, location: data.location ?? null, cover_image_url: data.cover_image_url ?? null })
   }
 
   async function fetchUpcomingRuns(clubId: string) {
@@ -649,23 +694,36 @@ function ExploreClubDetailSheet({ club, isMember, joiningId, onClose, onJoin }: 
 
   const description = fullDetail?.description ?? club.description
   const location = fullDetail?.location ?? club.location
+  const coverImage = fullDetail?.cover_image_url ?? club.cover_image_url
   const isJoining = joiningId === club.id
 
   return (
     <Animated.View style={[exploreDetailStyles.overlay, { transform: [{ translateY: slideAnim }] }]}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        <View style={exploreDetailStyles.topBar}>
-          <View style={{ width: 36 }} />
-          <TouchableOpacity style={exploreDetailStyles.closeBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <X size={20} color={COLORS.muted} strokeWidth={2} />
-          </TouchableOpacity>
+        {/* Cover area */}
+        <View style={exploreDetailStyles.coverArea}>
+          {coverImage ? (
+            <>
+              <ExpoImage
+                source={{ uri: coverImage }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+                transition={300}
+              />
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.2)' }]} />
+            </>
+          ) : (
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: '#E8E5E0' }]} />
+          )}
+          <View style={exploreDetailStyles.topBar}>
+            <View style={{ width: 36 }} />
+            <TouchableOpacity style={exploreDetailStyles.closeBtn} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <X size={20} color={COLORS.muted} strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={exploreDetailStyles.content}>
-          <View style={exploreDetailStyles.iconWrapper}>
-            <Text style={exploreDetailStyles.icon}>🏃</Text>
-          </View>
-
           <Text style={exploreDetailStyles.name}>{club.name}</Text>
 
           {description ? (
@@ -755,6 +813,11 @@ const exploreDetailStyles = StyleSheet.create({
     backgroundColor: COLORS.bg,
     zIndex: 10,
   },
+  coverArea: {
+    height: 190,
+    overflow: 'hidden',
+    backgroundColor: '#DEDAD6',
+  },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -772,19 +835,7 @@ const exploreDetailStyles = StyleSheet.create({
   },
   content: {
     padding: 24,
-    paddingTop: 8,
-  },
-  iconWrapper: {
-    width: 72,
-    height: 72,
-    borderRadius: 22,
-    backgroundColor: COLORS.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  icon: {
-    fontSize: 36,
+    paddingTop: 16,
   },
   name: {
     fontSize: 24,

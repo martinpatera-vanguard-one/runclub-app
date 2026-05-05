@@ -228,6 +228,7 @@ export default function MapaScreen() {
   const { myEventIds, join: joinCtx, leave: leaveCtx, pendingOpenId } = useEventParticipation()
   const { version: clubRunsVersion } = useClubRuns()
   const [activeFilter, setActiveFilter] = useState('Dnes')
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'open' | 'club'>('all')
   const [containerH, setContainerH] = useState(0)
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
@@ -611,9 +612,15 @@ export default function MapaScreen() {
     const today = new Date()
     const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1)
     const weekEnd = new Date(today); weekEnd.setDate(today.getDate() + 7)
-    if (activeFilter === 'Dnes') return d.toDateString() === today.toDateString()
-    if (activeFilter === 'Zítra') return d.toDateString() === tomorrow.toDateString()
-    return d >= today && d < weekEnd
+    const dateOk = activeFilter === 'Dnes'
+      ? d.toDateString() === today.toDateString()
+      : activeFilter === 'Zítra'
+      ? d.toDateString() === tomorrow.toDateString()
+      : d >= today && d < weekEnd
+    if (!dateOk) return false
+    if (sourceFilter === 'open') return run.source === 'public_run'
+    if (sourceFilter === 'club') return run.source === 'club_run' || run.source === 'event'
+    return true
   })
 
   const filterTitle = activeFilter === 'Dnes' ? 'Dnes běžíme 🏃' : activeFilter === 'Zítra' ? 'Zítra běžíme 🏃' : 'Tento týden 🏃'
@@ -662,13 +669,31 @@ export default function MapaScreen() {
       {/* Header overlay */}
       <SafeAreaView edges={['top']} style={styles.headerOverlay}>
         <View style={styles.header}>
-          <Text style={styles.mapTitle}>{filterTitle}</Text>
-          <Text style={styles.mapSubtitle}>
-            {loading
-              ? 'Načítám běhy…'
-              : `${filteredRuns.length} ${filteredRuns.length === 1 ? 'běh' : filteredRuns.length < 5 ? 'běhy' : 'běhů'} ve tvém okolí`}
-            {!userLocation && !loading ? ' · zjišťuji polohu…' : ''}
-          </Text>
+          <View style={styles.headerTopRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.mapTitle}>{filterTitle}</Text>
+              <Text style={styles.mapSubtitle}>
+                {loading
+                  ? 'Načítám běhy…'
+                  : `${filteredRuns.length} ${filteredRuns.length === 1 ? 'běh' : filteredRuns.length < 5 ? 'běhy' : 'běhů'} ve tvém okolí`}
+                {!userLocation && !loading ? ' · zjišťuji polohu…' : ''}
+              </Text>
+            </View>
+            <View style={styles.sourceToggle}>
+              <TouchableOpacity
+                style={[styles.sourceToggleBtn, sourceFilter === 'open' && styles.sourceToggleBtnActive]}
+                onPress={() => setSourceFilter(sourceFilter === 'open' ? 'all' : 'open')}
+              >
+                <Text style={[styles.sourceToggleText, sourceFilter === 'open' && styles.sourceToggleTextActive]}>Otevřené</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.sourceToggleBtn, sourceFilter === 'club' && styles.sourceToggleBtnActive]}
+                onPress={() => setSourceFilter(sourceFilter === 'club' ? 'all' : 'club')}
+              >
+                <Text style={[styles.sourceToggleText, sourceFilter === 'club' && styles.sourceToggleTextActive]}>Klubové</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
           <View style={styles.filterRow}>
             {FILTERS.map((f) => (
               <TouchableOpacity
@@ -709,48 +734,50 @@ export default function MapaScreen() {
           </View>
         </View>
 
-        {loading && (
-          <View style={styles.loadingState}>
-            <ActivityIndicator size="small" color={COLORS.accent} />
-          </View>
-        )}
+        <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 8 }}>
+          {loading && (
+            <View style={styles.loadingState}>
+              <ActivityIndicator size="small" color={COLORS.accent} />
+            </View>
+          )}
 
-        {!loading && filteredRuns.length === 0 && (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>Žádné nadcházející běhy</Text>
-          </View>
-        )}
+          {!loading && filteredRuns.length === 0 && (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>Žádné nadcházející běhy</Text>
+            </View>
+          )}
 
-        {!loading && filteredRuns.map((run, i) => (
-          <TouchableOpacity
-            key={run.id}
-            style={[styles.runCard, i < filteredRuns.length - 1 && styles.runCardBorder]}
-            onPress={() => openRun(run)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.runDot}>
-              <Text style={styles.runEmoji}>🏃</Text>
-            </View>
-            <View style={styles.runInfo}>
-              <Text style={styles.runName}>{run.label}</Text>
-              <Text style={styles.runTime}>{run.dayLabel} {run.time} · {run.clubName}</Text>
-              {(run.routeKm || run.paceSec) ? (
-                <Text style={styles.runStats}>
-                  {[
-                    run.routeKm ? `${run.routeKm} km` : null,
-                    formatPace(run.paceSec),
-                  ].filter(Boolean).join(' · ')}
-                </Text>
-              ) : null}
-            </View>
-            <View style={{ alignItems: 'flex-end', gap: 2 }}>
-              <Text style={styles.runCount}>{run.people}</Text>
-              {run.distKm !== null && (
-                <Text style={styles.runDist}>{formatDist(run.distKm)}</Text>
-              )}
-            </View>
-          </TouchableOpacity>
-        ))}
+          {!loading && filteredRuns.map((run, i) => (
+            <TouchableOpacity
+              key={run.id}
+              style={[styles.runCard, i < filteredRuns.length - 1 && styles.runCardBorder]}
+              onPress={() => openRun(run)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.runDot}>
+                <Text style={styles.runEmoji}>🏃</Text>
+              </View>
+              <View style={styles.runInfo}>
+                <Text style={styles.runName}>{run.label}</Text>
+                <Text style={styles.runTime}>{run.dayLabel} {run.time} · {run.clubName}</Text>
+                {(run.routeKm || run.paceSec) ? (
+                  <Text style={styles.runStats}>
+                    {[
+                      run.routeKm ? `${run.routeKm} km` : null,
+                      formatPace(run.paceSec),
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
+                ) : null}
+              </View>
+              <View style={{ alignItems: 'flex-end', gap: 2 }}>
+                <Text style={styles.runCount}>{run.people}</Text>
+                {run.distKm !== null && (
+                  <Text style={styles.runDist}>{formatDist(run.distKm)}</Text>
+                )}
+              </View>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </Animated.View>
 
       {/* Run detail modal */}
@@ -793,6 +820,17 @@ export default function MapaScreen() {
                           : selectedRun.runType}
                       </Text>
                     )}
+                    <View style={[
+                      styles.runSourceTag,
+                      selectedRun.source === 'public_run' ? styles.runSourceTagOpen : styles.runSourceTagClub,
+                    ]}>
+                      <Text style={[
+                        styles.runSourceTagText,
+                        selectedRun.source === 'public_run' ? styles.runSourceTagTextOpen : styles.runSourceTagTextClub,
+                      ]}>
+                        {selectedRun.source === 'public_run' ? 'Otevřený běh' : 'Klubový běh'}
+                      </Text>
+                    </View>
                   </View>
                   <TouchableOpacity onPress={closeModal} style={styles.modalClose}>
                     <Text style={styles.modalCloseText}>✕</Text>
@@ -800,18 +838,18 @@ export default function MapaScreen() {
                 </View>
 
                 <View style={styles.modalStats}>
-                  {(selectedRun.paceSec != null || selectedRun.routeKm != null || selectedRun.source === 'club_run') && (
+                  {(selectedRun.paceSec != null || selectedRun.routeKm != null) && (
                     <>
                       <View style={styles.modalStatSplit}>
                         <View style={styles.modalStatSplitItem}>
                           <Zap size={11} color={COLORS.muted} style={{ marginRight: 4 }} />
                           {selectedRun.paceSec != null ? (
                             <Text style={styles.modalStatValueSm}>{formatPace(selectedRun.paceSec)}</Text>
-                          ) : selectedRun.source === 'club_run' ? (
+                          ) : (
                             <Text style={styles.modalStatValueSmMuted}>Libovolné</Text>
-                          ) : null}
+                          )}
                         </View>
-                        {(selectedRun.paceSec != null || selectedRun.source === 'club_run') && selectedRun.routeKm != null && (
+                        {selectedRun.routeKm != null && (
                           <View style={styles.modalStatSplitDivider} />
                         )}
                         {selectedRun.routeKm != null && (
@@ -990,6 +1028,43 @@ const styles = StyleSheet.create({
   header: { padding: 16, paddingBottom: 12, backgroundColor: COLORS.bg },
   mapTitle: { fontSize: 22, fontWeight: '800', color: COLORS.text },
   mapSubtitle: { fontSize: 13, color: COLORS.muted, marginTop: 2 },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 2 },
+  sourceToggle: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
+    padding: 3,
+    gap: 2,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  sourceToggleBtn: {
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: 'transparent',
+  },
+  sourceToggleBtnActive: {
+    backgroundColor: COLORS.accent,
+    shadowColor: COLORS.accent,
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  sourceToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  sourceToggleTextActive: {
+    color: '#FFF',
+  },
   filterRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
   filterChip: {
     backgroundColor: COLORS.surface, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6,
@@ -1194,5 +1269,29 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: '#FFF',
     lineHeight: 30,
+  },
+  runSourceTag: {
+    alignSelf: 'flex-start',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginTop: 6,
+  },
+  runSourceTagOpen: {
+    backgroundColor: COLORS.accentSoft,
+  },
+  runSourceTagClub: {
+    backgroundColor: '#E8F0FE',
+  },
+  runSourceTagText: {
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  runSourceTagTextOpen: {
+    color: COLORS.accent,
+  },
+  runSourceTagTextClub: {
+    color: '#3B6FE0',
   },
 })
